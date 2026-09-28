@@ -11,14 +11,14 @@
             top: 20px; 
             left: 20px; 
             color: white; 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            font-family: sans-serif; 
             pointer-events: none; 
             text-shadow: 1px 1px 2px black;
         }
     </style>
 </head>
 <body>
-    <div id="info">Cargando archivos de GitHub...</div>
+    <div id="info">Cargando archivos...</div>
 
     <script type="importmap">
         {
@@ -31,19 +31,19 @@
 
     <script type="module">
         import * as THREE from 'three';
-        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
         // =========================================================================
-        // CONFIGURACIÓN EXACTA SEGÚN TU GITHUB
+        // CONFIGURACIÓN EXACTA SEGÚN TU CAPTURA DE PANTALLA
         // =========================================================================
         const CONFIG = {
-            modelPath: 'my_mesh_data.gib',            // <--- Nombre exacto de tu archivo en el repo
-            texturePath: 'my_mesh_data_positions.png', // <--- Nombre exacto de tu imagen en el repo
+            modelPath: 'my_mesh_data.obj',             // <--- Nombre EXACTO en tu GitHub
+            texturePath: 'my_mesh_data_positions.png', // <--- Nombre EXACTO en tu GitHub
             totalFrames: 120,                        
             totalVertices: 382,                      
             
-            // ⚠️ ATENCIÓN: Pon aquí los números que te dio Maya en la consola
+            // ⚠️ PON AQUÍ TUS NÚMEROS DE MAYA
             minPos: new THREE.Vector3(-5.608, -2.0, -1.0), 
             maxPos: new THREE.Vector3(5.608, 10.0, 2.0)    
         };
@@ -115,19 +115,19 @@
                 wireframe: true
             });
 
-            const gltfLoader = new GLTFLoader();
-            gltfLoader.load(CONFIG.modelPath, (gltf) => {
-                model = gltf.scene;
+            const objLoader = new OBJLoader();
+            objLoader.load(CONFIG.modelPath, (obj) => {
+                model = obj;
                 model.traverse((child) => {
                     if (child.isMesh) {
                         child.material = vatMaterial;
                     }
                 });
                 scene.add(model);
-                document.getElementById('info').innerHTML = "Visor VAT Activo<br>Modelo: my_mesh_data.gib";
+                document.getElementById('info').innerHTML = "Visor VAT Activo - Usando OBJ";
             }, undefined, (err) => {
-                console.error("Error cargando el archivo:", err);
-                document.getElementById('info').innerHTML = "Error cargando modelo. Verifica que sea un GLB real.";
+                console.error("Error cargando OBJ:", err);
+                document.getElementById('info').innerHTML = "Error cargando my_mesh_data.obj";
             });
 
             animate();
