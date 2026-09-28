@@ -18,7 +18,7 @@
     </style>
 </head>
 <body>
-    <div id="info">Cargando archivos...</div>
+    <div id="info">Cargando datos reales de Maya...</div>
 
     <script type="importmap">
         {
@@ -35,17 +35,17 @@
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
         // =========================================================================
-        // CONFIGURACIÓN EXACTA SEGÚN TU CAPTURA DE PANTALLA
+        // CONFIGURACIÓN EXTRAÍDA DE TU LOG DE MAYA
         // =========================================================================
         const CONFIG = {
-            modelPath: 'my_mesh_data.obj',             // <--- Nombre EXACTO en tu GitHub
-            texturePath: 'my_mesh_data_positions.png', // <--- Nombre EXACTO en tu GitHub
-            totalFrames: 120,                        
-            totalVertices: 382,                      
+            modelPath: 'my_mesh_data.obj',             
+            texturePath: 'my_mesh_data_positions.png', 
+            totalFrames: 299,                        // <--- ACTUALIZADO: 299 frames
+            totalVertices: 382,                      // <--- 382 vértices
             
-            // ⚠️ PON AQUÍ TUS NÚMEROS DE MAYA
-            minPos: new THREE.Vector3(-5.608, -2.0, -1.0), 
-            maxPos: new THREE.Vector3(5.608, 10.0, 2.0)    
+            // VALORES REALES DE TU LOG:
+            minPos: new THREE.Vector3(-4.2086, -1.0, -4.2086), 
+            maxPos: new THREE.Vector3(4.2086, 20.3173, 4.2086)    
         };
         // =========================================================================
 
@@ -58,7 +58,7 @@
             scene.background = new THREE.Color(0x111111);
             
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.set(0, 5, 15);
+            camera.position.set(0, 10, 20);
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -124,9 +124,8 @@
                     }
                 });
                 scene.add(model);
-                document.getElementById('info').innerHTML = "Visor VAT Activo - Usando OBJ";
+                document.getElementById('info').innerHTML = "Visor VAT Activo - Datos de Maya Aplicados";
             }, undefined, (err) => {
-                console.error("Error cargando OBJ:", err);
                 document.getElementById('info').innerHTML = "Error cargando my_mesh_data.obj";
             });
 
