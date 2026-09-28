@@ -2,23 +2,15 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Visor VAT - Billy Bologna</title>
+    <title>Visor VAT - FINAL</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #111; }
+        body { margin: 0; overflow: hidden; background: #000; }
         canvas { display: block; }
-        #info { 
-            position: absolute; 
-            top: 20px; 
-            left: 20px; 
-            color: white; 
-            font-family: sans-serif; 
-            pointer-events: none; 
-            text-shadow: 1px 1px 2px black;
-        }
+        #info { position: absolute; top: 20px; left: 20px; color: white; font-family: sans-serif; pointer-events: none; }
     </style>
 </head>
 <body>
-    <div id="info">Cargando modelo sólido...</div>
+    <div id="info">Cargando modelo GLB real...</div>
 
     <script type="importmap">
         {
@@ -31,35 +23,27 @@
 
     <script type="module">
         import * as THREE from 'three';
-        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-        // =========================================================================
-        // CONFIGURACIÓN FINAL (DATOS DE TU LOG)
-        // =========================================================================
         const CONFIG = {
-            modelPath: 'my_mesh_data.obj',             
+            modelPath: 'modelo.glb', 
             texturePath: 'my_mesh_data_positions.png', 
             totalFrames: 299,                        
             totalVertices: 382,                      
             minPos: new THREE.Vector3(-4.2086, -1.0, -4.2086), 
             maxPos: new THREE.Vector3(4.2086, 20.3173, 4.2086),
-            
-            // VELOCIDAD: Sube este número para que vaya más rápido (ej: 0.2), baja para cámara lenta (ej: 0.01)
             speed: 0.1 
         };
-        // =========================================================================
 
-        let scene, camera, renderer, model, vatMaterial;
+        let scene, camera, renderer, vatMaterial;
 
         init();
 
         function init() {
             scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x111111);
-            
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.set(0, 15, 25);
+            camera.position.set(0, 10, 20);
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -77,7 +61,6 @@
             vatTexture.minFilter = THREE.NearestFilter;
             vatTexture.magFilter = THREE.NearestFilter;
             vatTexture.wrapS = THREE.RepeatWrapping; 
-            vatTexture.wrapT = THREE.ClampToEdgeWrapping;
 
             vatMaterial = new THREE.ShaderMaterial({
                 uniforms: {
@@ -89,7 +72,7 @@
                     uTotalVertices: { value: CONFIG.totalVertices }
                 },
                 vertexShader: `
-                    varying vec3 vPosition;
+                    varying vec3 vPos;
                     uniform sampler2D uTexture;
                     uniform float uTime;
                     uniform float uTotalFrames;
@@ -103,35 +86,29 @@
                         float y = vId / uTotalVertices;
                         vec3 color = texture2D(uTexture, vec2(x, y)).rgb;
                         vec3 newPosition = uMinPos + color * (uMaxPos - uMinPos);
-                        
-                        vPosition = newPosition;
+                        vPos = newPosition;
                         gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
                     }
                 `,
                 fragmentShader: `
-                    varying vec3 vPosition;
+                    varying vec3 vPos;
                     void main() {
-                        // Creamos un color basado en la altura (Y) para que tenga volumen y no se vea plano
-                        float brightness = smoothstep(-1.0, 20.0, vPosition.y) * 0.5 + 0.5;
-                        vec3 color = vec3(0.4, 0.6, 1.0) * brightness; 
-                        gl_FragColor = vec4(color, 1.0);
+                        float lum = smoothstep(-1.0, 20.0, vPos.y) * 0.5 + 0.5;
+                        gl_FragColor = vec4(vec3(0.2, 0.5, 1.0) * lum, 1.0);
                     }
                 `,
-                wireframe: false // <--- AQUÍ ESTÁ EL CAMBIO: 'false' para ver caras sólidas
+                wireframe: false
             });
 
-            const objLoader = new OBJLoader();
-            objLoader.load(CONFIG.modelPath, (obj) => {
-                model = obj;
-                model.traverse((child) => {
-                    if (child.isMesh) {
-                        child.material = vatMaterial;
-                    }
+            const gltfLoader = new GLTFLoader();
+            gltfLoader.load(CONFIG.modelPath, (gltf) => {
+                gltf.scene.traverse((child) => {
+                    if (child.isMesh) child.material = vatMaterial;
                 });
-                scene.add(model);
-                document.getElementById('info').innerHTML = "Visor VAT Sólido Activo";
+                scene.add(gltf.scene);
+                document.getElementById('info').innerHTML = "Visor VAT OK - Modelo GLB Cargado";
             }, undefined, (err) => {
-                document.getElementById('info').innerHTML = "Error cargando el modelo";
+                document.getElementById('info').innerHTML = "Error: Sube el archivo modelo.glb";
             });
 
             animate();
@@ -140,9 +117,7 @@
         function animate() {
             requestAnimationFrame(animate);
             if (vatMaterial) {
-                // Usamos CONFIG.speed para controlar la velocidad
-                const time = (Date.now() * CONFIG.speed) % CONFIG.totalFrames; 
-                vatMaterial.uniforms.uTime.value = time;
+                vatMaterial.uniforms.uTime.value = (Date.now() * CONFIG.speed) % CONFIG.totalFrames;
             }
             renderer.render(scene, camera);
         }
