@@ -45,6 +45,8 @@
   <label>Metal <input id="metal" type="range" min="0" max="1" step="0.01" value="0.1"></label>
   <label>Rugosidad <input id="rough" type="range" min="0" max="1" step="0.01" value="0.55"></label>
   <label>Textura <input id="tex" type="file" accept="image/*"></label>
+  <label>Normal map <input id="nmap" type="file" accept="image/*"></label>
+  <div id="nmapnote" style="font-size:11px;color:#9ab"></div>
 </div>
 <div id="err"></div>
 
@@ -101,6 +103,7 @@ const SOFT_DECL = /* glsl */`
   uniform sampler2D uPos;
   uniform sampler2D uNrm;
   uniform sampler2D uCol;
+  uniform sampler2D uTan;
   uniform float uFrames, uTileH, uW, uH, uFrame, uOffsetMode;
   attribute float vid;
   #ifdef USE_INSTANCING
@@ -119,6 +122,14 @@ const SOFT_CALC = TIME + /* glsl */`
   if (uOffsetMode > 0.5) vatP += position;
   #ifdef VAT_COL
     vVatCol = mix(texture2D(uCol, uvA), texture2D(uCol, uvB), ft);
+  #endif
+  vec3 vatT = vec3(1.0, 0.0, 0.0);
+  float vatTw = 1.0;
+  #ifdef VAT_TAN
+    vec4 tA = texture2D(uTan, uvA);
+    vec4 tB = texture2D(uTan, uvB);
+    vatT = normalize(mix(tA.xyz, tB.xyz, ft));
+    vatTw = tA.w;
   #endif
 `;
 
@@ -146,20 +157,25 @@ const RIGID_CALC = TIME + /* glsl */`
   vec4 p = mix(pa, pb, ft);
   vec3 vatP = p.xyz + qrot(q, position * p.w);
   vec3 vatN = qrot(q, normal);
+  vec3 vatT = qrot(q, vec3(1.0, 0.0, 0.0));
+  float vatTw = 1.0;
 `;
 
-function makeMaterial(U, { rigid, hasCol }) {
+function makeMaterial(U, { rigid, hasCol, hasTan }) {
   const mat = new THREE.MeshStandardMaterial({ color: 0xc0ccdd, metalness: 0.1, roughness: 0.55, side: THREE.DoubleSide });
   mat.defines = {};
   if (hasCol) mat.defines.VAT_COL = '';
-  mat.customProgramCacheKey = () => (rigid ? 'vat-rigid' : 'vat-soft') + (hasCol ? '-col' : '');
+  if (hasTan) mat.defines.VAT_TAN = '';
+  mat.customProgramCacheKey = () => (rigid ? 'vat-rigid' : 'vat-soft') + (hasCol ? '-col' : '') + (hasTan ? '-tan' : '');
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, U);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + (rigid ? RIGID_DECL : SOFT_DECL))
       .replace('#include <beginnormal_vertex>',
         (rigid ? RIGID_CALC : SOFT_CALC) +
-        '\nvec3 objectNormal = vatN;\n#ifdef USE_TANGENT\nvec3 objectTangent = vec3( tangent.xyz );\n#endif')
+        '\nvec3 objectNormal = vatN;\n#ifdef USE_TANGENT\nvec3 objectTangent = vatT;\n#endif')
+      .replace('#include <normal_vertex>',
+        '#include <normal_vertex>\n#ifdef USE_TANGENT\nvBitangent = normalize( cross( vNormal, vTangent ) * vatTw );\n#endif')
       .replace('#include <begin_vertex>', 'vec3 transformed = vatP;');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\n#ifdef VAT_COL\nvarying vec4 vVatCol;\n#endif')
@@ -192,6 +208,7 @@ async function loadVAT(base) {
   const frames = meta.frames;
   const W = meta.texture?.[0] ?? frames;
   const H = meta.texture?.[1] ?? meta.vertices;
+  const optFile = (name) => (meta.files?.[name]?.bin ? dir + meta.files[name].bin : null);
   const file = (name) => {
     const f = meta.files?.[name]?.bin;
     if (meta.files && !f) return null;
@@ -208,7 +225,7 @@ async function loadVAT(base) {
 
   const geo = new THREE.BufferGeometry();
   const box = new THREE.Box3();
-  let hasCol = false;
+  let hasCol = false, hasTan = false;
 
   if (rigid) {
     const m = meta.mesh;
@@ -226,10 +243,12 @@ async function loadVAT(base) {
     box.max.fromArray(meta.bbox_max).addScalar(r);
   } else {
     U.uNrm = { value: await fetchTex(file('nrm'), meta, W, H) };
-    if (file('col')) { U.uCol = { value: await fetchTex(file('col'), meta, W, H) }; hasCol = true; }
+    if (optFile('col')) { U.uCol = { value: await fetchTex(optFile('col'), meta, W, H) }; hasCol = true; }
+    if (optFile('tan')) { U.uTan = { value: await fetchTex(optFile('tan'), meta, W, H) }; hasTan = true; }
     const count = meta.vid.length;
     const basePos = meta.position ? new Float32Array(meta.position) : new Float32Array(count * 3);
     geo.setAttribute('position', new THREE.BufferAttribute(basePos, 3));
+    if (hasTan) geo.setAttribute('tangent', new THREE.BufferAttribute(new Float32Array(count * 4), 4)); // marcador: activa USE_TANGENT
     geo.setAttribute('vid', new THREE.BufferAttribute(new Float32Array(meta.vid), 1));
     geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(meta.uv), 2));
     geo.setIndex(meta.index);
@@ -245,7 +264,7 @@ async function loadVAT(base) {
   const phase = new THREE.InstancedBufferAttribute(new Float32Array(MAX_INSTANCES), 1);
   geo.setAttribute('aPhase', phase);
 
-  const mat = makeMaterial(U, { rigid, hasCol });
+  const mat = makeMaterial(U, { rigid, hasCol, hasTan });
   const mesh = new THREE.InstancedMesh(geo, mat, MAX_INSTANCES);
   mesh.count = 1;
   mesh.frustumCulled = false;
@@ -260,7 +279,7 @@ async function loadVAT(base) {
   holder.position.set(-center.x * s, -box.min.y * s, -center.z * s);
   holder.add(mesh);
 
-  return { holder, mesh, mat, phase, U, meta, rigid, s, spacing: maxDim * 1.2, height: size.y * s };
+  return { holder, mesh, mat, phase, U, meta, rigid, hasTan, s, spacing: maxDim * 1.2, height: size.y * s };
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +335,18 @@ try {
   $('count').oninput = layout;
   $('rand').onchange = layout;
   ['color', 'metal', 'rough'].forEach((id) => ($(id).oninput = applyMaterial));
+  if (!vat.hasTan) {
+    $('nmap').disabled = true;
+    $('nmapnote').textContent = 'Normal map: exporta con "tangentes" activado.';
+  }
+  $('nmap').onchange = (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    new THREE.TextureLoader().load(URL.createObjectURL(f), (t) => {
+      vat.mat.normalMap = t;
+      vat.mat.needsUpdate = true;
+    });
+  };
   $('tex').onchange = (e) => {
     const f = e.target.files[0];
     if (!f) return;
