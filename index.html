@@ -18,7 +18,7 @@
     </style>
 </head>
 <body>
-    <div id="info">Cargando datos reales de Maya...</div>
+    <div id="info">Cargando modelo sólido...</div>
 
     <script type="importmap">
         {
@@ -35,17 +35,18 @@
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
         // =========================================================================
-        // CONFIGURACIÓN EXTRAÍDA DE TU LOG DE MAYA
+        // CONFIGURACIÓN FINAL (DATOS DE TU LOG)
         // =========================================================================
         const CONFIG = {
             modelPath: 'my_mesh_data.obj',             
             texturePath: 'my_mesh_data_positions.png', 
-            totalFrames: 299,                        // <--- ACTUALIZADO: 299 frames
-            totalVertices: 382,                      // <--- 382 vértices
-            
-            // VALORES REALES DE TU LOG:
+            totalFrames: 299,                        
+            totalVertices: 382,                      
             minPos: new THREE.Vector3(-4.2086, -1.0, -4.2086), 
-            maxPos: new THREE.Vector3(4.2086, 20.3173, 4.2086)    
+            maxPos: new THREE.Vector3(4.2086, 20.3173, 4.2086),
+            
+            // VELOCIDAD: Sube este número para que vaya más rápido (ej: 0.2), baja para cámara lenta (ej: 0.01)
+            speed: 0.1 
         };
         // =========================================================================
 
@@ -58,7 +59,7 @@
             scene.background = new THREE.Color(0x111111);
             
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.set(0, 10, 20);
+            camera.position.set(0, 15, 25);
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -66,7 +67,7 @@
             document.body.appendChild(renderer.domElement);
 
             new OrbitControls(camera, renderer.domElement);
-            scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+            scene.add(new THREE.AmbientLight(0xffffff, 1.0));
             const sun = new THREE.DirectionalLight(0xffffff, 2);
             sun.position.set(5, 10, 5);
             scene.add(sun);
@@ -88,7 +89,7 @@
                     uTotalVertices: { value: CONFIG.totalVertices }
                 },
                 vertexShader: `
-                    varying vec2 vUv;
+                    varying vec3 vPosition;
                     uniform sampler2D uTexture;
                     uniform float uTime;
                     uniform float uTotalFrames;
@@ -97,22 +98,26 @@
                     uniform vec3 uMaxPos;
 
                     void main() {
-                        vUv = uv;
                         float vId = float(gl_VertexID);
                         float x = uTime / uTotalFrames; 
                         float y = vId / uTotalVertices;
                         vec3 color = texture2D(uTexture, vec2(x, y)).rgb;
                         vec3 newPosition = uMinPos + color * (uMaxPos - uMinPos);
+                        
+                        vPosition = newPosition;
                         gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
                     }
                 `,
                 fragmentShader: `
-                    varying vec2 vUv;
+                    varying vec3 vPosition;
                     void main() {
-                        gl_FragColor = vec4(vUv.x, vUv.y, 1.0, 1.0);
+                        // Creamos un color basado en la altura (Y) para que tenga volumen y no se vea plano
+                        float brightness = smoothstep(-1.0, 20.0, vPosition.y) * 0.5 + 0.5;
+                        vec3 color = vec3(0.4, 0.6, 1.0) * brightness; 
+                        gl_FragColor = vec4(color, 1.0);
                     }
                 `,
-                wireframe: true
+                wireframe: false // <--- AQUÍ ESTÁ EL CAMBIO: 'false' para ver caras sólidas
             });
 
             const objLoader = new OBJLoader();
@@ -124,9 +129,9 @@
                     }
                 });
                 scene.add(model);
-                document.getElementById('info').innerHTML = "Visor VAT Activo - Datos de Maya Aplicados";
+                document.getElementById('info').innerHTML = "Visor VAT Sólido Activo";
             }, undefined, (err) => {
-                document.getElementById('info').innerHTML = "Error cargando my_mesh_data.obj";
+                document.getElementById('info').innerHTML = "Error cargando el modelo";
             });
 
             animate();
@@ -135,7 +140,8 @@
         function animate() {
             requestAnimationFrame(animate);
             if (vatMaterial) {
-                const time = (Date.now() * 0.03) % CONFIG.totalFrames; 
+                // Usamos CONFIG.speed para controlar la velocidad
+                const time = (Date.now() * CONFIG.speed) % CONFIG.totalFrames; 
                 vatMaterial.uniforms.uTime.value = time;
             }
             renderer.render(scene, camera);
