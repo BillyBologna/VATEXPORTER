@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VAT Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1a1c22; overflow: hidden; font-family: system-ui, sans-serif; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; top: 12px; left: 12px; color: #dde; font-size: 13px;
+    background: rgba(0,0,0,.45); padding: 10px 12px; border-radius: 8px;
+  }
+  #ui label { display: block; margin-top: 6px; }
+  #err { position: fixed; bottom: 12px; left: 12px; color: #ff8080; font-size: 13px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="ui">
+  <div id="info">Cargando…</div>
+  <label>Velocidad <input id="speed" type="range" min="0" max="3" step="0.05" value="1"></label>
+  <label><input id="pause" type="checkbox"> Pausa</label>
+  <label>Frame <input id="frame" type="range" min="0" max="1" step="0.01" value="0"></label>
+</div>
+<div id="err"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ====== CONFIG ======
+const BASE = './my_mesh';      // ./my_mesh_pos.bin, ./my_mesh_nrm.bin, ./my_mesh_vat.json
+const TARGET_SIZE = 2;         // tamaño final del modelo en unidades de la escena (auto-escala)
+// ====================
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1c22);
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 100);
+camera.position.set(0, 1.2, 4);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+scene.add(new THREE.GridHelper(6, 12, 0x444455, 0x2a2c35));
+
+async function loadVAT(base) {
+  const meta = await (await fetch(`${base}_vat.json`)).json();
+
+  const load = async (suffix) => {
+    const res = await fetch(`${base}_${suffix}.bin`);
+    if (!res.ok) throw new Error(`No se pudo cargar ${base}_${suffix}.bin`);
+    const data = new Float32Array(await res.arrayBuffer());
+    const tex = new THREE.DataTexture(data, meta.frames, meta.vertices, THREE.RGBAFormat, THREE.FloatType);
+    tex.minFilter = tex.magFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+    return { tex, data };
+  };
+  const [pos, nrm] = await Promise.all([load('pos'), load('nrm')]);
+
+  // Bounding box del frame 0 (para centrar y escalar automáticamente)
+  const box = new THREE.Box3();
+  const v = new THREE.Vector3();
+  for (let i = 0; i < meta.vertices; i++) {
+    const o = (i * meta.frames) * 4;
+    box.expandByPoint(v.set(pos.data[o], pos.data[o + 1], pos.data[o + 2]));
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(meta.vid.length * 3), 3)); // dummy
+  geo.setAttribute('vid', new THREE.BufferAttribute(new Float32Array(meta.vid), 1));
+  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(meta.uv), 2));
+  geo.setIndex(meta.index);
+
+  const mat = new THREE.ShaderMaterial({
+    side: THREE.DoubleSide,
+    uniforms: {
+      uPos: { value: pos.tex }, uNrm: { value: nrm.tex },
+      uFrames: { value: meta.frames }, uVerts: { value: meta.vertices },
+      uFrame: { value: 0 },
+    },
+    vertexShader: /* glsl */`
+      uniform sampler2D uPos, uNrm;
+      uniform float uFrames, uVerts, uFrame;
+      attribute float vid;
+      varying vec3 vN;
+      varying vec2 vUv;
+
+      void main() {
+        float f  = mod(uFrame, uFrames);
+        float f0 = floor(f);
+        float f1 = mod(f0 + 1.0, uFrames);
+        float t  = fract(f);
+        float v  = (vid + 0.5) / uVerts;
+        vec2 uv0 = vec2((f0 + 0.5) / uFrames, v);
+        vec2 uv1 = vec2((f1 + 0.5) / uFrames, v);
+
+        vec3 p = mix(texture2D(uPos, uv0).xyz, texture2D(uPos, uv1).xyz, t);
+        vec3 n = mix(texture2D(uNrm, uv0).xyz, texture2D(uNrm, uv1).xyz, t);
+
+        vN = normalize(normalMatrix * n);
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+      }`,
+    fragmentShader: /* glsl */`
+      varying vec3 vN;
+      varying vec2 vUv;
+      void main() {
+        vec3 n = normalize(vN);
+        if (!gl_FrontFacing) n = -n;
+        float key  = max(dot(n, normalize(vec3(0.5, 1.0, 0.7))), 0.0);
+        float fill = max(dot(n, normalize(vec3(-0.6, 0.2, -0.5))), 0.0) * 0.25;
+        vec3 base = vec3(0.75, 0.8, 0.9);
+        gl_FragColor = vec4(base * (0.18 + 0.85 * key + fill), 1.0);
+      }`,
+  });
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+
+  // Centrar en X/Z, apoyar sobre la rejilla y escalar
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const s = TARGET_SIZE / Math.max(size.x, size.y, size.z);
+  mesh.scale.setScalar(s);
+  mesh.position.set(-center.x * s, -box.min.y * s, -center.z * s);
+
+  return { mesh, meta, height: size.y * s };
+}
+
+const $ = (id) => document.getElementById(id);
+let vat = null;
+let frame = 0;
+
+try {
+  vat = await loadVAT(BASE);
+  scene.add(vat.mesh);
+  controls.target.set(0, vat.height / 2, 0);
+  $('info').textContent = `${vat.meta.frames} frames · ${vat.meta.vertices} vértices · ${vat.meta.fps} fps`;
+  $('frame').max = vat.meta.frames - 1;
+} catch (e) {
+  console.error(e);
+  $('info').textContent = 'Error';
+  $('err').textContent = e.message + ' — ¿estás usando un servidor local (no file://)?';
+}
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (vat) {
+    if ($('pause').checked) {
+      frame = parseFloat($('frame').value);
+    } else {
+      frame = (frame + dt * vat.meta.fps * parseFloat($('speed').value)) % vat.meta.frames;
+      $('frame').value = frame;
+    }
+    vat.mesh.material.uniforms.uFrame.value = frame;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
