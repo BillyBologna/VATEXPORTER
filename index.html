@@ -1,21 +1,30 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <title>Mi Visor VAT - Vertex Animation</title>
+    <meta charset="UTF-8">
+    <title>Visor VAT - Vertex Animation</title>
     <style>
         body { margin: 0; overflow: hidden; background: #111; }
         canvas { display: block; }
-        #info { position: absolute; top: 10px; left: 10px; color: white; font-family: sans-serif; pointer-events: none; }
+        #info { 
+            position: absolute; 
+            top: 20px; 
+            left: 20px; 
+            color: white; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            pointer-events: none; 
+            text-shadow: 1px 1px 2px black;
+        }
     </style>
 </head>
 <body>
-    <div id="info">Cargando Visor VAT...<br>Sube tu modelo y textura a la carpeta.</div>
+    <div id="info">Cargando Visor VAT...<br>Verifica que el modelo.glb y la textura estén en la carpeta.</div>
 
-    <!-- Importamos Three.js desde un CDN -->
+    <!-- Importamos Three.js desde un CDN con la ruta CORREGIDA -->
     <script type="importmap">
         {
             "imports": {
-                "three": "https://unpkg.com/three@0.160.0/build,three.module.js",
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
                 "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
             }
         }
@@ -27,15 +36,17 @@
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
         // =========================================================================
-        // CONFIGURACIÓN (CAMBIA ESTOS VALORES CON LOS DE TU MAYA)
+        // CONFIGURACIÓN: CAMBIA ESTOS VALORES CON LOS DE TU MAYA
         // =========================================================================
         const CONFIG = {
-            modelPath: 'modelo.glb',        // Nombre de tu archivo GLB
-            texturePath: 'vertex_position_data.png', 
-            totalFrames: 120,               // Ancho de tu imagen
-            totalVertices: 382,            // Alto de tu imagen
-            minPos: new THREE.Vector3(-5.608, -2.0, -1.0), // COPIAR DE MAYA (Min)
-            maxPos: new THREE.Vector3(5.608, 10.0, 2.0)    // COPIAR DE MAYA (Max)
+            modelPath: 'modelo.glb',                // Nombre exacto de tu archivo GLB
+            texturePath: 'vertex_position_data.png', // Nombre exacto de tu imagen PNG
+            totalFrames: 120,                       // Ancho de tu imagen (frames)
+            totalVertices: 382,                     // Alto de tu imagen (vértices)
+            
+            // COPIA LOS VALORES DEL LOG DE MAYA AQUÍ:
+            minPos: new THREE.Vector3(-5.608, -2.0, -1.0), // Min [X, Y, Z]
+            maxPos: new THREE.Vector3(5.608, 10.0, 2.0)    // Max [X, Y, Z]
         };
         // =========================================================================
 
@@ -44,26 +55,41 @@
         init();
 
         function init() {
+            // 1. Escena y Cámara
             scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111111);
+            
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.set(0, 5, 10);
+            camera.position.set(0, 5, 15);
 
+            // 2. Renderizador
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
             document.body.appendChild(renderer.domElement);
 
+            // 3. Controles y Luces
             new OrbitControls(camera, renderer.domElement);
-            scene.add(new THREE.AmbientLight(0xffffff, 1));
-            scene.add(new THREE.DirectionalLight(0xffffff, 2));
+            scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+            const sun = new THREE.DirectionalLight(0xffffff, 2);
+            sun.position.set(5, 10, 5);
+            scene.add(sun);
 
-            // Cargamos la textura VAT
+            // 4. Carga de Textura VAT
             const loader = new THREE.TextureLoader();
-            const vatTexture = loader.load(CONFIG.texturePath);
-            vatTexture.minFilter = THREE.NearestFilter; // Crucial: Sin interpolación
+            const vatTexture = loader.load(CONFIG.texturePath, 
+                () => { console.log("Textura cargada correctamente"); },
+                undefined,
+                (err) => { console.error("Error cargando textura. Verifica el nombre del archivo."); }
+            );
+            
+            // CRUCIAL: Desactivar interpolación para leer datos exactos de píxeles
+            vatTexture.minFilter = THREE.NearestFilter;
             vatTexture.magFilter = THREE.NearestFilter;
-            vatTexture.wrapS = THREE.RepeatWrapping; // Para que la animación haga loop
+            vatTexture.wrapS = THREE.RepeatWrapping; 
+            vatTexture.wrapT = THREE.ClampToEdgeWrapping;
 
-            // Creamos el ShaderMaterial
+            // 5. Creación del ShaderMaterial
             vatMaterial = new THREE.ShaderMaterial({
                 uniforms: {
                     uTime: { value: 0 },
@@ -85,17 +111,19 @@
                     void main() {
                         vUv = uv;
                         
-                        // 1. Obtener el ID del vértice (index)
+                        // Obtener el ID del vértice
                         float vId = float(gl_VertexID);
                         
-                        // 2. Calcular coordenadas de la textura
+                        // Calcular coordenadas UV para leer la textura
+                        // x = tiempo actual / frames totales
+                        // y = id del vértice / vértices totales
                         float x = uTime / uTotalFrames; 
                         float y = vId / uTotalVertices;
                         
-                        // 3. Leer el color del píxel (R, G, B)
+                        // Leer color RGB del píxel
                         vec3 color = texture2D(uTexture, vec2(x, y)).rgb;
                         
-                        // 4. Des-normalizar: Convertir color 0-1 a posición real
+                        // Convertir color (0 a 1) a posición real (min a max)
                         vec3 newPosition = uMinPos + color * (uMaxPos - uMinPos);
                         
                         gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
@@ -104,21 +132,27 @@
                 fragmentShader: `
                     varying vec2 vUv;
                     void main() {
-                        gl_FragColor = vec4(vUv, 1.0, 1.0); // Color básico según UV
+                        // Color simple basado en UVs para dar profundidad
+                        gl_FragColor = vec4(vUv.x, vUv.y, 1.0, 1.0);
                     }
                 `,
-                wireframe: true // Para que veas bien los vértices moviéndose
+                wireframe: true // Cambiar a 'false' para ver la malla sólida
             });
 
-            // Cargamos el modelo
+            // 6. Carga del Modelo GLB
             const gltfLoader = new GLTFLoader();
             gltfLoader.load(CONFIG.modelPath, (gltf) => {
                 model = gltf.scene;
                 model.traverse((child) => {
-                    if (child.isMesh) child.material = vatMaterial;
+                    if (child.isMesh) {
+                        child.material = vatMaterial;
+                    }
                 });
                 scene.add(model);
-                document.getElementById('info').innerHTML = "Visor VAT Activo<br>Usa el mouse para rotar";
+                document.getElementById('info').innerHTML = "Visor VAT Activo<br>Sube tu modelo y textura a la carpeta.";
+            }, undefined, (err) => {
+                console.error("Error cargando el modelo GLB. Verifica que el nombre sea correcto.");
+                document.getElementById('info').innerHTML = "Error: No se encontró el modelo.glb";
             });
 
             animate();
@@ -127,9 +161,9 @@
         function animate() {
             requestAnimationFrame(animate);
             
-            // Actualizamos el tiempo para la animación (0 a totalFrames)
             if (vatMaterial) {
-                const time = (Date.now() * 0.05) % CONFIG.totalFrames; 
+                // Avanza el tiempo para la animación en loop
+                const time = (Date.now() * 0.03) % CONFIG.totalFrames; 
                 vatMaterial.uniforms.uTime.value = time;
             }
             
