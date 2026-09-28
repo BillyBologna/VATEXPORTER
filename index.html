@@ -8,11 +8,15 @@
   html, body { margin: 0; height: 100%; background: #1a1c22; overflow: hidden; font-family: system-ui, sans-serif; }
   canvas { display: block; }
   #ui {
-    position: fixed; top: 12px; left: 12px; color: #dde; font-size: 13px;
-    background: rgba(0,0,0,.45); padding: 10px 12px; border-radius: 8px;
+    position: fixed; top: 12px; left: 12px; width: 250px; color: #dde; font-size: 13px;
+    background: rgba(0,0,0,.55); padding: 10px 12px; border-radius: 8px; max-height: calc(100% - 40px); overflow: auto;
   }
-  #ui label { display: block; margin-top: 6px; }
-  #err { position: fixed; bottom: 12px; left: 12px; color: #ff8080; font-size: 13px; }
+  #ui h4 { margin: 10px 0 2px; font-size: 12px; color: #9ab; text-transform: uppercase; letter-spacing: .05em; }
+  #ui label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 5px; }
+  #ui input[type=range] { flex: 1; min-width: 0; }
+  #ui input[type=file] { width: 100%; font-size: 11px; margin-top: 4px; }
+  #err { position: fixed; bottom: 12px; left: 12px; color: #ff8080; font-size: 13px; max-width: 80%; }
+  .val { min-width: 34px; text-align: right; color: #9ab; }
 </style>
 <script type="importmap">
 {
@@ -26,20 +30,37 @@
 <body>
 <div id="ui">
   <div id="info">Cargando…</div>
+
+  <h4>Reproducción</h4>
   <label>Velocidad <input id="speed" type="range" min="0" max="3" step="0.05" value="1"></label>
-  <label><input id="pause" type="checkbox"> Pausa</label>
+  <label><span><input id="pause" type="checkbox"> Pausa</span></label>
   <label>Frame <input id="frame" type="range" min="0" max="1" step="0.01" value="0"></label>
+
+  <h4>Instancias</h4>
+  <label>Cantidad <input id="count" type="range" min="1" max="2500" step="1" value="1"><span class="val" id="countv">1</span></label>
+  <label><span><input id="rand" type="checkbox" checked> Desfase aleatorio</span></label>
+
+  <h4>Material</h4>
+  <label>Color <input id="color" type="color" value="#c0ccdd"></label>
+  <label>Metal <input id="metal" type="range" min="0" max="1" step="0.01" value="0.1"></label>
+  <label>Rugosidad <input id="rough" type="range" min="0" max="1" step="0.01" value="0.55"></label>
+  <label>Textura <input id="tex" type="file" accept="image/*"></label>
 </div>
 <div id="err"></div>
 
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 // ====== CONFIG ======
-const BASE = './my_mesh';   // ./my_mesh_pos.bin, ./my_mesh_nrm.bin, ./my_mesh_vat.json
-const TARGET_SIZE = 4;      // tamaño en la escena de TODO el recorrido de la animación
+const BASE = new URLSearchParams(location.search).get('base') || './my_mesh';
+const TARGET_SIZE = 4;       // tamaño en escena de UNA instancia (todo su recorrido)
+const MAX_INSTANCES = 2500;
 // ====================
+
+const $ = (id) => document.getElementById(id);
+const bust = `?v=${Date.now()}`;
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -48,111 +69,262 @@ document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1c22);
-const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 200);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(3, 6, 4);
+scene.add(sun);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 500);
 camera.position.set(0, 3, 8);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
-scene.add(new THREE.GridHelper(10, 20, 0x444455, 0x2a2c35));
+const grid = new THREE.GridHelper(10, 20, 0x444455, 0x2a2c35);
+scene.add(grid);
 
-// evita que el navegador / GitHub Pages sirva archivos viejos
-const bust = `?v=${Date.now()}`;
+// ---------------------------------------------------------------------------
+// GLSL inyectado en MeshStandardMaterial
+// ---------------------------------------------------------------------------
+const TIME = /* glsl */`
+  float vf = uFrame;
+  #ifdef USE_INSTANCING
+    vf += aPhase;
+  #endif
+  vf = mod(vf, uFrames);
+  float f0 = floor(vf);
+  float f1 = mod(f0 + 1.0, uFrames);
+  float ft = fract(vf);
+`;
+
+const SOFT_DECL = /* glsl */`
+  uniform sampler2D uPos;
+  uniform sampler2D uNrm;
+  uniform sampler2D uCol;
+  uniform float uFrames, uTileH, uW, uH, uFrame, uOffsetMode;
+  attribute float vid;
+  #ifdef USE_INSTANCING
+    attribute float aPhase;
+  #endif
+  varying vec4 vVatCol;
+`;
+const SOFT_CALC = TIME + /* glsl */`
+  float tile = floor(vid / uTileH);
+  float rowY = vid - tile * uTileH;
+  float vv = (rowY + 0.5) / uH;
+  vec2 uvA = vec2((tile * uFrames + f0 + 0.5) / uW, vv);
+  vec2 uvB = vec2((tile * uFrames + f1 + 0.5) / uW, vv);
+  vec3 vatP = mix(texture2D(uPos, uvA).xyz, texture2D(uPos, uvB).xyz, ft);
+  vec3 vatN = normalize(mix(texture2D(uNrm, uvA).xyz, texture2D(uNrm, uvB).xyz, ft));
+  if (uOffsetMode > 0.5) vatP += position;
+  #ifdef VAT_COL
+    vVatCol = mix(texture2D(uCol, uvA), texture2D(uCol, uvB), ft);
+  #endif
+`;
+
+const RIGID_DECL = /* glsl */`
+  uniform sampler2D uPos;
+  uniform sampler2D uRot;
+  uniform float uFrames, uW, uH, uFrame;
+  attribute float piece;
+  #ifdef USE_INSTANCING
+    attribute float aPhase;
+  #endif
+  varying vec4 vVatCol;
+  vec3 qrot(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }
+`;
+const RIGID_CALC = TIME + /* glsl */`
+  float vv = (piece + 0.5) / uH;
+  vec2 uvA = vec2((f0 + 0.5) / uW, vv);
+  vec2 uvB = vec2((f1 + 0.5) / uW, vv);
+  vec4 pa = texture2D(uPos, uvA);
+  vec4 pb = texture2D(uPos, uvB);
+  vec4 qa = texture2D(uRot, uvA);
+  vec4 qb = texture2D(uRot, uvB);
+  if (dot(qa, qb) < 0.0) qb = -qb;
+  vec4 q = normalize(mix(qa, qb, ft));
+  vec4 p = mix(pa, pb, ft);
+  vec3 vatP = p.xyz + qrot(q, position * p.w);
+  vec3 vatN = qrot(q, normal);
+`;
+
+function makeMaterial(U, { rigid, hasCol }) {
+  const mat = new THREE.MeshStandardMaterial({ color: 0xc0ccdd, metalness: 0.1, roughness: 0.55, side: THREE.DoubleSide });
+  mat.defines = {};
+  if (hasCol) mat.defines.VAT_COL = '';
+  mat.customProgramCacheKey = () => (rigid ? 'vat-rigid' : 'vat-soft') + (hasCol ? '-col' : '');
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, U);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\n' + (rigid ? RIGID_DECL : SOFT_DECL))
+      .replace('#include <beginnormal_vertex>',
+        (rigid ? RIGID_CALC : SOFT_CALC) +
+        '\nvec3 objectNormal = vatN;\n#ifdef USE_TANGENT\nvec3 objectTangent = vec3( tangent.xyz );\n#endif')
+      .replace('#include <begin_vertex>', 'vec3 transformed = vatP;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\n#ifdef VAT_COL\nvarying vec4 vVatCol;\n#endif')
+      .replace('#include <color_fragment>', '#include <color_fragment>\n#ifdef VAT_COL\ndiffuseColor *= vVatCol;\n#endif');
+  };
+  return mat;
+}
+
+// ---------------------------------------------------------------------------
+// Carga
+// ---------------------------------------------------------------------------
+async function fetchTex(url, meta, W, H) {
+  const res = await fetch(url + bust);
+  if (!res.ok) throw new Error(`No se pudo cargar ${url}`);
+  const buf = await res.arrayBuffer();
+  const half = meta.dtype === 'float16';
+  const data = half ? new Uint16Array(buf) : new Float32Array(buf);
+  if (data.length !== W * H * 4) throw new Error(`${url}: tamaño inesperado (${data.length} vs ${W * H * 4})`);
+  const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat, half ? THREE.HalfFloatType : THREE.FloatType);
+  tex.minFilter = tex.magFilter = THREE.NearestFilter;   // la interpolación entre frames la hace el shader
+  tex.generateMipmaps = false;
+  tex.needsUpdate = true;
+  return tex;
+}
 
 async function loadVAT(base) {
   const meta = await (await fetch(`${base}_vat.json${bust}`)).json();
-
-  const load = async (suffix) => {
-    const res = await fetch(`${base}_${suffix}.bin${bust}`);
-    if (!res.ok) throw new Error(`No se pudo cargar ${base}_${suffix}.bin`);
-    const data = new Float32Array(await res.arrayBuffer());
-    const tex = new THREE.DataTexture(data, meta.frames, meta.vertices, THREE.RGBAFormat, THREE.FloatType);
-    tex.minFilter = tex.magFilter = THREE.NearestFilter;
-    tex.generateMipmaps = false;
-    tex.needsUpdate = true;
-    return { tex, data };
+  const dir = base.slice(0, base.lastIndexOf('/') + 1);
+  const rigid = meta.mode === 'rigid';
+  const frames = meta.frames;
+  const W = meta.texture?.[0] ?? frames;
+  const H = meta.texture?.[1] ?? meta.vertices;
+  const file = (name) => {
+    const f = meta.files?.[name]?.bin;
+    if (meta.files && !f) return null;
+    return f ? dir + f : `${base}_${name}.bin`;
   };
-  const [pos, nrm] = await Promise.all([load('pos'), load('nrm')]);
+  if (meta.files && !meta.files.pos?.bin) throw new Error('Este export no incluye .bin (activa ".bin crudo" en el exportador).');
 
-  // Bounding box de TODOS los frames (encuadra todo el recorrido)
-  const box = new THREE.Box3();
-  const v = new THREE.Vector3();
-  for (let o = 0; o < pos.data.length; o += 4) {
-    box.expandByPoint(v.set(pos.data[o], pos.data[o + 1], pos.data[o + 2]));
-  }
+  const U = {
+    uFrame: { value: 0 }, uFrames: { value: frames }, uW: { value: W }, uH: { value: H },
+    uTileH: { value: meta.tile_height ?? meta.vertices },
+    uOffsetMode: { value: meta.position_mode === 'offset' ? 1 : 0 },
+    uPos: { value: await fetchTex(file('pos'), meta, W, H) },
+  };
 
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(meta.vid.length * 3), 3)); // dummy
-  geo.setAttribute('vid', new THREE.BufferAttribute(new Float32Array(meta.vid), 1));
-  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(meta.uv), 2));
-  geo.setIndex(meta.index);
+  const box = new THREE.Box3();
+  let hasCol = false;
 
-  const mat = new THREE.ShaderMaterial({
-    side: THREE.DoubleSide,
-    uniforms: {
-      uPos: { value: pos.tex }, uNrm: { value: nrm.tex },
-      uFrames: { value: meta.frames }, uVerts: { value: meta.vertices },
-      uFrame: { value: 0 },
-    },
-    vertexShader: /* glsl */`
-      uniform sampler2D uPos, uNrm;
-      uniform float uFrames, uVerts, uFrame;
-      attribute float vid;
-      varying vec3 vN;
-      varying vec2 vUv;
+  if (rigid) {
+    const m = meta.mesh;
+    if (!m) throw new Error('El JSON no incluye la malla (activa "Incluir malla en el JSON").');
+    U.uRot = { value: await fetchTex(file('rot'), meta, W, H) };
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(m.position), 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(m.normal), 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(m.uv), 2));
+    geo.setAttribute('piece', new THREE.BufferAttribute(new Float32Array(m.piece), 1));
+    geo.setIndex(m.index);
+    // caja = recorrido de traslaciones ampliado con el radio de las piezas
+    geo.computeBoundingSphere();
+    const r = geo.boundingSphere.radius + geo.boundingSphere.center.length();
+    box.min.fromArray(meta.bbox_min).addScalar(-r);
+    box.max.fromArray(meta.bbox_max).addScalar(r);
+  } else {
+    U.uNrm = { value: await fetchTex(file('nrm'), meta, W, H) };
+    if (file('col')) { U.uCol = { value: await fetchTex(file('col'), meta, W, H) }; hasCol = true; }
+    const count = meta.vid.length;
+    const basePos = meta.position ? new Float32Array(meta.position) : new Float32Array(count * 3);
+    geo.setAttribute('position', new THREE.BufferAttribute(basePos, 3));
+    geo.setAttribute('vid', new THREE.BufferAttribute(new Float32Array(meta.vid), 1));
+    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(meta.uv), 2));
+    geo.setIndex(meta.index);
+    box.min.fromArray(meta.bbox_min);
+    box.max.fromArray(meta.bbox_max);
+    if (U.uOffsetMode.value && meta.position) {
+      const bb = new THREE.Box3().setFromArray(basePos);
+      box.min.add(bb.min); box.max.add(bb.max);
+    }
+  }
 
-      void main() {
-        float f  = mod(uFrame, uFrames);
-        float f0 = floor(f);
-        float f1 = mod(f0 + 1.0, uFrames);
-        float t  = fract(f);
-        float v  = (vid + 0.5) / uVerts;
-        vec2 uv0 = vec2((f0 + 0.5) / uFrames, v);
-        vec2 uv1 = vec2((f1 + 0.5) / uFrames, v);
+  // atributo por instancia: desfase de tiempo (en frames)
+  const phase = new THREE.InstancedBufferAttribute(new Float32Array(MAX_INSTANCES), 1);
+  geo.setAttribute('aPhase', phase);
 
-        vec3 p = mix(texture2D(uPos, uv0).xyz, texture2D(uPos, uv1).xyz, t);
-        vec3 n = mix(texture2D(uNrm, uv0).xyz, texture2D(uNrm, uv1).xyz, t);
-
-        vN = normalize(normalMatrix * n);
-        vUv = uv;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
-      }`,
-    fragmentShader: /* glsl */`
-      varying vec3 vN;
-      varying vec2 vUv;
-      void main() {
-        vec3 n = normalize(vN);
-        if (!gl_FrontFacing) n = -n;
-        float key  = max(dot(n, normalize(vec3(0.5, 1.0, 0.7))), 0.0);
-        float fill = max(dot(n, normalize(vec3(-0.6, 0.2, -0.5))), 0.0) * 0.25;
-        vec3 base = vec3(0.75, 0.8, 0.9);
-        gl_FragColor = vec4(base * (0.18 + 0.85 * key + fill), 1.0);
-      }`,
-  });
-
-  const mesh = new THREE.Mesh(geo, mat);
+  const mat = makeMaterial(U, { rigid, hasCol });
+  const mesh = new THREE.InstancedMesh(geo, mat, MAX_INSTANCES);
+  mesh.count = 1;
   mesh.frustumCulled = false;
 
-  // Escala para que todo el recorrido quepa en TARGET_SIZE, centrado en X/Z y apoyado en y=0
+  // Un contenedor escala y centra: TARGET_SIZE = tamaño de UNA instancia
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
-  const s = TARGET_SIZE / Math.max(size.x, size.y, size.z);
-  mesh.scale.setScalar(s);
-  mesh.position.set(-center.x * s, -box.min.y * s, -center.z * s);
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const s = TARGET_SIZE / maxDim;
+  const holder = new THREE.Group();
+  holder.scale.setScalar(s);
+  holder.position.set(-center.x * s, -box.min.y * s, -center.z * s);
+  holder.add(mesh);
 
-  return { mesh, meta, height: size.y * s };
+  return { holder, mesh, mat, phase, U, meta, rigid, s, spacing: maxDim * 1.2, height: size.y * s };
 }
 
-const $ = (id) => document.getElementById(id);
+// ---------------------------------------------------------------------------
+// Instancias y cámara
+// ---------------------------------------------------------------------------
 let vat = null;
 let frame = 0;
+let randoms = null;
+
+function layout() {
+  const n = parseInt($('count').value, 10);
+  const useRand = $('rand').checked;
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  const m = new THREE.Matrix4();
+  for (let i = 0; i < n; i++) {
+    const gx = i % cols, gz = Math.floor(i / cols);
+    m.makeTranslation((gx - (cols - 1) / 2) * vat.spacing, 0, (gz - (rows - 1) / 2) * vat.spacing);
+    vat.mesh.setMatrixAt(i, m);
+    vat.phase.array[i] = i === 0 || !useRand ? 0 : randoms[i] * vat.meta.frames;
+  }
+  vat.mesh.count = n;
+  vat.mesh.instanceMatrix.needsUpdate = true;
+  vat.phase.needsUpdate = true;
+  $('countv').textContent = n;
+
+  const extent = Math.max(cols, rows) * vat.spacing * vat.s;
+  const dist = Math.max(TARGET_SIZE, extent) * 1.8;
+  camera.position.set(0, vat.height * 0.6 + dist * 0.35, dist);
+  controls.target.set(0, vat.height / 2, 0);
+  grid.scale.setScalar(Math.max(1, extent / 10));
+}
+
+function applyMaterial() {
+  vat.mat.color.set($('color').value);
+  vat.mat.metalness = parseFloat($('metal').value);
+  vat.mat.roughness = parseFloat($('rough').value);
+}
 
 try {
   vat = await loadVAT(BASE);
-  scene.add(vat.mesh);
-  controls.target.set(0, vat.height / 2, 0);
-  camera.position.set(0, vat.height * 0.6 + 2, TARGET_SIZE * 1.8);
-  $('info').textContent = `${vat.meta.frames} frames · ${vat.meta.vertices} vértices · ${vat.meta.fps.toFixed(2)} fps`;
-  $('frame').max = vat.meta.frames - 1;
+  randoms = Float32Array.from({ length: MAX_INSTANCES }, Math.random);
+  scene.add(vat.holder);
+  const m = vat.meta;
+  $('info').textContent =
+    `${m.mode === 'rigid' ? 'Rigid' : 'Soft'} · ${m.frames} frames · ${m.vertices} ${m.mode === 'rigid' ? 'piezas' : 'filas'} · ` +
+    `${m.fps.toFixed(2)} fps · ${m.dtype ?? 'float32'}${(m.tiles ?? 1) > 1 ? ' · ' + m.tiles + ' tiles' : ''}`;
+  $('frame').max = m.frames - 1;
+  layout();
+  applyMaterial();
+
+  $('count').max = MAX_INSTANCES;
+  $('count').oninput = layout;
+  $('rand').onchange = layout;
+  ['color', 'metal', 'rough'].forEach((id) => ($(id).oninput = applyMaterial));
+  $('tex').onchange = (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    new THREE.TextureLoader().load(URL.createObjectURL(f), (t) => {
+      t.colorSpace = THREE.SRGBColorSpace;
+      vat.mat.map = t;
+      vat.mat.needsUpdate = true;
+    });
+  };
 } catch (e) {
   console.error(e);
   $('info').textContent = 'Error';
@@ -169,7 +341,7 @@ renderer.setAnimationLoop(() => {
       frame = (frame + dt * vat.meta.fps * parseFloat($('speed').value)) % vat.meta.frames;
       $('frame').value = frame;
     }
-    vat.mesh.material.uniforms.uFrame.value = frame;
+    vat.U.uFrame.value = frame;
   }
   controls.update();
   renderer.render(scene, camera);
