@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Visor VAT - FINAL</title>
+    <title>Visor VAT - Final Billy</title>
     <style>
         body { margin: 0; overflow: hidden; background: #000; }
         canvas { display: block; }
@@ -10,7 +10,7 @@
     </style>
 </head>
 <body>
-    <div id="info">Cargando modelo GLB real...</div>
+    <div id="info">Iniciando visor con my_mesh_data.gib...</div>
 
     <script type="importmap">
         {
@@ -26,15 +26,21 @@
         import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
+        // =========================================================================
+        // CONFIGURACIÓN EXACTA SEGÚN TU GITHUB Y LOG DE MAYA
+        // =========================================================================
         const CONFIG = {
-            modelPath: 'modelo.glb', 
-            texturePath: 'my_mesh_data_positions.png', 
+            modelPath: 'my_mesh_data.gib',             // <--- El archivo exacto de tu repo
+            texturePath: 'my_mesh_//my_mesh_data_positions.png', // <--- Corregido abajo
             totalFrames: 299,                        
             totalVertices: 382,                      
             minPos: new THREE.Vector3(-4.2086, -1.0, -4.2086), 
             maxPos: new THREE.Vector3(4.2086, 20.3173, 4.2086),
             speed: 0.1 
         };
+        // Corregimos la ruta de la textura para que no haya errores
+        CONFIG.texturePath = 'my_mesh_data_positions.png';
+        // =========================================================================
 
         let scene, camera, renderer, vatMaterial;
 
@@ -106,9 +112,9 @@
                     if (child.isMesh) child.material = vatMaterial;
                 });
                 scene.add(gltf.scene);
-                document.getElementById('info').innerHTML = "Visor VAT OK - Modelo GLB Cargado";
+                document.getElementById('info').innerHTML = "Visor VAT Activo - my_mesh_data.gib cargando";
             }, undefined, (err) => {
-                document.getElementById('info').innerHTML = "Error: Sube el archivo modelo.glb";
+                document.getElementById('info').innerHTML = "Error: No se pudo cargar el archivo .gib";
             });
 
             animate();
