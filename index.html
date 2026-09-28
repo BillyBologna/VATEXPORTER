@@ -4,24 +4,28 @@
     <meta charset="UTF-8">
     <title>Visor VAT Pro - Billy Bologna</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #1a1a1a; }
+        body { margin: 0; overflow: hidden; background: #111; }
         canvas { display: block; }
         #info { 
             position: absolute; 
             top: 20px; 
             left: 20px; 
             color: white; 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            font-family: 'Segoe UI', sans-serif; 
             pointer-events: none; 
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
-            background: rgba(0,0,0,0.3);
-            padding: 10px;
-            border-radius: 8px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            background: rgba(0,0,0,0.5);
+            padding: 15px;
+            border-radius: 10px;
+            border-left: 5px solid #00d4ff;
         }
     </style>
 </head>
 <body>
-    <div id="info">Cargando escena VAT...</div>
+    <div id="info">
+        <strong>VAT System Activo</strong><br>
+        Estado: Cargando mallas y texturas...
+    </div>
 
     <script type="importmap">
         {
@@ -37,24 +41,29 @@
         import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
+        // =========================================================================
+        // CONFIGURACIÓN (Asegúrate que coincida con tu exportación de Maya)
+        // =========================================================================
         const CONFIG = {
             modelPath: 'my_mesh_data.obj',             
             texturePath: 'my_mesh_data_positions.png', 
+            normTexturePath: 'my_mesh_data_normals.png', // <--- NUEVA TEXTURA
             totalFrames: 299,                        
             totalVertices: 382,                      
             minPos: new THREE.Vector3(-4.2086, -1.0, -4.2086), 
             maxPos: new THREE.Vector3(4.2086, 20.3173, 4.2086)    
         };
+        // =========================================================================
 
         let scene, camera, renderer, model, vatMaterial;
 
         init();
 
         function init() {
-            // --- ESCENA ---
+            // --- ESCENA Y FOG ---
             scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x1a1a1a);
-            scene.fog = new THREE.Fog(0x1a1a1a, 20, 100); // Niebla para dar profundidad
+            scene.background = new THREE.Color(0x0a0a0a);
+            scene.fog = new THREE.Fog(0x0a0a0a, 20, 100);
 
             // --- CÁMARA ---
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -64,59 +73,69 @@
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
-            renderer.shadowMap.enabled = true; // Habilitar sombras
+            renderer.shadowMap.enabled = true;
             document.body.appendChild(renderer.domElement);
 
             new OrbitControls(camera, renderer.domElement);
 
             // --- ILUMINACIÓN ---
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
             scene.add(ambientLight);
 
-            const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
-            dirLight.position.set(10, 20, 10);
-            dirLight.castShadow = true;
-            scene.add(dirLight);
+            const sunLight = new THREE.DirectionalLight(0xffffff, 1.5);
+            sunLight.position.set(10, 20, 10);
+            sunLight.castShadow = true;
+            scene.add(sunLight);
 
-            const fillLight = new THREE.PointLight(0x44aaff, 1);
+            const fillLight = new THREE.PointLight(0x00d4ff, 1);
             fillLight.position.set(-10, 10, -10);
             scene.add(fillLight);
 
-            // --- SUELO Y REFERENCIA ---
-            // Plano de suelo
-            const planeGeo = new THREE.PlaneGeometry(100, 100);
-            const planeMat = new THREE.MeshStandardMaterial({ 
-                color: 0x222222, 
+            // --- SUELO DE REFERENCIA ---
+            const floorGeo = new THREE.PlaneGeometry(100, 100);
+            const floorMat = new THREE.MeshStandardMaterial({ 
+                color: 0x151515, 
                 roughness: 0.8, 
                 metalness: 0.2 
             });
-            const floor = new THREE.Mesh(planeGeo, planeMat);
+            const floor = new THREE.Mesh(floorGeo, floorMat);
             floor.rotation.x = -Math.PI / 2;
             floor.receiveShadow = true;
             scene.add(floor);
 
-            // Rejilla (Grid)
-            const grid = new THREE.GridHelper(100, 50, 0x444444, 0x333333);
+            const grid = new THREE.GridHelper(100, 50, 0x333333, 0x222222);
             scene.add(grid);
 
-            // --- VAT MATERIAL ---
+            // --- CARGA DE TEXTURAS VAT ---
             const loader = new THREE.TextureLoader();
-            const vatTexture = loader.load(CONFIG.texturePath);
-            vatTexture.minFilter = THREE.NearestFilter;
-            vatTexture.magFilter = THREE.NearestFilter;
+            const posTexture = loader.load(CONFIG.texturePath);
+            const normTexture = loader.load(CONFIG.normTexturePath); // Cargar normales
 
+            // Configuración crítica para evitar que Three.js suavice los datos (están en píxeles exactos)
+            [posTexture, normTexture].forEach(tex => {
+                tex.minFilter = THREE.NearestFilter;
+                tex.magFilter = THREE.NearestFilter;
+                tex.wrapS = THREE.RepeatWrapping; 
+                tex.wrapT = THREE.ClampToEdgeWrapping;
+            });
+
+            // --- MATERIAL VAT CON SOMBREADO ---
             vatMaterial = new THREE.ShaderMaterial({
                 uniforms: {
                     uTime: { value: 0 },
-                    uTexture: { value: vatTexture },
+                    uTexture: { value: posTexture },
+                    uNormTexture: { value: normTexture },
                     uMinPos: { value: CONFIG.minPos },
                     uMaxPos: { value: CONFIG.maxPos },
                     uTotalFrames: { value: CONFIG.totalFrames },
-                    uTotalVertices: { value: CONFIG.totalVertices }
+                    uTotalVertices: { value: CONFIG.totalVertices },
+                    uLightPos: { value: new THREE.Vector3(10, 20, 10) }
                 },
                 vertexShader: `
-                    varying vec3 vPosition;
+                    varying vec3 vNormal;
+                    varying vec3 vWorldPosition;
                     uniform sampler2D uTexture;
+                    uniform sampler2D uNormTexture;
                     uniform float uTime;
                     uniform float uTotalFrames;
                     uniform float uTotalVertices;
@@ -127,31 +146,48 @@
                         float vId = float(gl_VertexID);
                         float x = uTime / uTotalFrames; 
                         float y = vId / uTotalVertices;
+
+                        // 1. Calcular Posición
+                        vec3 posColor = texture2D(uTexture, vec2(x, y)).rgb;
+                        vec3 newPosition = uMinPos + posColor * (uMaxPos - uMinPos);
                         
-                        vec3 color = texture2D(uTexture, vec2(x, y)).rgb;
-                        vec3 newPosition = uMinPos + color * (uMaxPos - uMinPos);
+                        // 2. Calcular Normal (Remapear de [0,1] a [-1,1])
+                        vec3 normColor = texture2D(uNormTexture, vec2(x, y)).rgb;
+                        vNormal = normColor * 2.0 - 1.0;
                         
-                        vPosition = newPosition;
+                        vWorldPosition = newPosition;
                         gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
                     }
                 `,
                 fragmentShader: `
-                    varying vec3 vPosition;
+                    varying vec3 vNormal;
+                    varying vec3 vWorldPosition;
+                    uniform vec3 uLightPos;
+
                     void main() {
-                        // Creamos un color basado en la altura (Y) para que no sea plano
-                        // Esto simula profundidad ya que no tenemos normales reales
-                        float height = (vPosition.y + 1.0) / 21.0; 
-                        vec3 colorA = vec3(0.2, 0.4, 0.8); // Azul oscuro
-                        vec3 colorB = vec3(0.5, 0.8, 1.0); // Azul claro
-                        vec3 finalColor = mix(colorA, colorB, height);
+                        // Normalizar la normal interpolada
+                        vec3 n = normalize(vNormal);
+                        
+                        // Vector dirección hacia la luz
+                        vec3 lightDir = normalize(uLightPos - vWorldPosition);
+                        
+                        // Cálculo de Iluminación Difusa (Lambert)
+                        float diff = max(dot(n, lightDir), 0.0);
+                        
+                        // Color base basado en la altura para dar estilo
+                        float height = (vWorldPosition.y + 1.0) / 21.0;
+                        vec3 colorBase = mix(vec3(0.1, 0.3, 0.6), vec3(0.0, 0.8, 1.0), height);
+                        
+                        // Combinar color, luz difusa y un toque de luz ambiental
+                        vec3 finalColor = colorBase * (diff + 0.3);
                         
                         gl_FragColor = vec4(finalColor, 1.0);
                     }
                 `,
-                wireframe: false // <--- IMPORTANTE: Desactivado para ver caras
+                wireframe: false // <--- CARAS SÓLIDAS
             });
 
-            // --- CARGA DE MODELO ---
+            // --- CARGA DE MODELO OBJ ---
             const objLoader = new OBJLoader();
             objLoader.load(CONFIG.modelPath, (obj) => {
                 model = obj;
@@ -162,7 +198,7 @@
                     }
                 });
                 scene.add(model);
-                document.getElementById('info').innerHTML = "Visor VAT Activo <br> Modelo: Sólido | Suelo: Referencial";
+                document.getElementById('info').innerHTML = "<strong>Visor VAT Pro Activo</strong><br>Sombreado: Normales Realistas<br>Modo: Sólido";
             }, undefined, (err) => {
                 document.getElementById('info').innerHTML = "Error cargando el archivo OBJ";
             });
@@ -173,7 +209,7 @@
         function animate() {
             requestAnimationFrame(animate);
             if (vatMaterial) {
-                // Animación en loop
+                // Animación en loop suave
                 const time = (Date.now() * 0.03) % CONFIG.totalFrames; 
                 vatMaterial.uniforms.uTime.value = time;
             }
