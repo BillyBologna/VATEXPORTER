@@ -37,8 +37,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // ====== CONFIG ======
-const BASE = './my_mesh';      // ./my_mesh_pos.bin, ./my_mesh_nrm.bin, ./my_mesh_vat.json
-const TARGET_SIZE = 2;         // tamaño final del modelo en unidades de la escena (auto-escala)
+const BASE = './my_mesh';   // ./my_mesh_pos.bin, ./my_mesh_nrm.bin, ./my_mesh_vat.json
+const TARGET_SIZE = 4;      // tamaño en la escena de TODO el recorrido de la animación
 // ====================
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -48,18 +48,21 @@ document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1c22);
-const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 100);
-camera.position.set(0, 1.2, 4);
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 200);
+camera.position.set(0, 3, 8);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
-scene.add(new THREE.GridHelper(6, 12, 0x444455, 0x2a2c35));
+scene.add(new THREE.GridHelper(10, 20, 0x444455, 0x2a2c35));
+
+// evita que el navegador / GitHub Pages sirva archivos viejos
+const bust = `?v=${Date.now()}`;
 
 async function loadVAT(base) {
-  const meta = await (await fetch(`${base}_vat.json`)).json();
+  const meta = await (await fetch(`${base}_vat.json${bust}`)).json();
 
   const load = async (suffix) => {
-    const res = await fetch(`${base}_${suffix}.bin`);
+    const res = await fetch(`${base}_${suffix}.bin${bust}`);
     if (!res.ok) throw new Error(`No se pudo cargar ${base}_${suffix}.bin`);
     const data = new Float32Array(await res.arrayBuffer());
     const tex = new THREE.DataTexture(data, meta.frames, meta.vertices, THREE.RGBAFormat, THREE.FloatType);
@@ -70,11 +73,10 @@ async function loadVAT(base) {
   };
   const [pos, nrm] = await Promise.all([load('pos'), load('nrm')]);
 
-  // Bounding box del frame 0 (para centrar y escalar automáticamente)
+  // Bounding box de TODOS los frames (encuadra todo el recorrido)
   const box = new THREE.Box3();
   const v = new THREE.Vector3();
-  for (let i = 0; i < meta.vertices; i++) {
-    const o = (i * meta.frames) * 4;
+  for (let o = 0; o < pos.data.length; o += 4) {
     box.expandByPoint(v.set(pos.data[o], pos.data[o + 1], pos.data[o + 2]));
   }
 
@@ -130,7 +132,7 @@ async function loadVAT(base) {
   const mesh = new THREE.Mesh(geo, mat);
   mesh.frustumCulled = false;
 
-  // Centrar en X/Z, apoyar sobre la rejilla y escalar
+  // Escala para que todo el recorrido quepa en TARGET_SIZE, centrado en X/Z y apoyado en y=0
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const s = TARGET_SIZE / Math.max(size.x, size.y, size.z);
@@ -148,7 +150,8 @@ try {
   vat = await loadVAT(BASE);
   scene.add(vat.mesh);
   controls.target.set(0, vat.height / 2, 0);
-  $('info').textContent = `${vat.meta.frames} frames · ${vat.meta.vertices} vértices · ${vat.meta.fps} fps`;
+  camera.position.set(0, vat.height * 0.6 + 2, TARGET_SIZE * 1.8);
+  $('info').textContent = `${vat.meta.frames} frames · ${vat.meta.vertices} vértices · ${vat.meta.fps.toFixed(2)} fps`;
   $('frame').max = vat.meta.frames - 1;
 } catch (e) {
   console.error(e);
