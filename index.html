@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Visor VAT - Vertex Animation</title>
+    <title>Visor VAT - Billy Bologna</title>
     <style>
         body { margin: 0; overflow: hidden; background: #111; }
         canvas { display: block; }
@@ -18,9 +18,8 @@
     </style>
 </head>
 <body>
-    <div id="info">Cargando Visor VAT...<br>Verifica que el modelo.glb y la textura estén en la carpeta.</div>
+    <div id="info">Cargando archivos de GitHub...</div>
 
-    <!-- Importamos Three.js desde un CDN con la ruta CORREGIDA -->
     <script type="importmap">
         {
             "imports": {
@@ -36,17 +35,17 @@
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
         // =========================================================================
-        // CONFIGURACIÓN: CAMBIA ESTOS VALORES CON LOS DE TU MAYA
+        // CONFIGURACIÓN EXACTA SEGÚN TU GITHUB
         // =========================================================================
         const CONFIG = {
-            modelPath: 'modelo.glb',                // Nombre exacto de tu archivo GLB
-            texturePath: 'vertex_position_data.png', // Nombre exacto de tu imagen PNG
-            totalFrames: 120,                       // Ancho de tu imagen (frames)
-            totalVertices: 382,                     // Alto de tu imagen (vértices)
+            modelPath: 'my_mesh_data.gib',            // <--- Nombre exacto de tu archivo en el repo
+            texturePath: 'my_mesh_data_positions.png', // <--- Nombre exacto de tu imagen en el repo
+            totalFrames: 120,                        
+            totalVertices: 382,                      
             
-            // COPIA LOS VALORES DEL LOG DE MAYA AQUÍ:
-            minPos: new THREE.Vector3(-5.608, -2.0, -1.0), // Min [X, Y, Z]
-            maxPos: new THREE.Vector3(5.608, 10.0, 2.0)    // Max [X, Y, Z]
+            // ⚠️ ATENCIÓN: Pon aquí los números que te dio Maya en la consola
+            minPos: new THREE.Vector3(-5.608, -2.0, -1.0), 
+            maxPos: new THREE.Vector3(5.608, 10.0, 2.0)    
         };
         // =========================================================================
 
@@ -55,41 +54,30 @@
         init();
 
         function init() {
-            // 1. Escena y Cámara
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x111111);
             
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
             camera.position.set(0, 5, 15);
 
-            // 2. Renderizador
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             document.body.appendChild(renderer.domElement);
 
-            // 3. Controles y Luces
             new OrbitControls(camera, renderer.domElement);
             scene.add(new THREE.AmbientLight(0xffffff, 1.5));
             const sun = new THREE.DirectionalLight(0xffffff, 2);
             sun.position.set(5, 10, 5);
             scene.add(sun);
 
-            // 4. Carga de Textura VAT
             const loader = new THREE.TextureLoader();
-            const vatTexture = loader.load(CONFIG.texturePath, 
-                () => { console.log("Textura cargada correctamente"); },
-                undefined,
-                (err) => { console.error("Error cargando textura. Verifica el nombre del archivo."); }
-            );
-            
-            // CRUCIAL: Desactivar interpolación para leer datos exactos de píxeles
+            const vatTexture = loader.load(CONFIG.texturePath);
             vatTexture.minFilter = THREE.NearestFilter;
             vatTexture.magFilter = THREE.NearestFilter;
             vatTexture.wrapS = THREE.RepeatWrapping; 
             vatTexture.wrapT = THREE.ClampToEdgeWrapping;
 
-            // 5. Creación del ShaderMaterial
             vatMaterial = new THREE.ShaderMaterial({
                 uniforms: {
                     uTime: { value: 0 },
@@ -110,36 +98,23 @@
 
                     void main() {
                         vUv = uv;
-                        
-                        // Obtener el ID del vértice
                         float vId = float(gl_VertexID);
-                        
-                        // Calcular coordenadas UV para leer la textura
-                        // x = tiempo actual / frames totales
-                        // y = id del vértice / vértices totales
                         float x = uTime / uTotalFrames; 
                         float y = vId / uTotalVertices;
-                        
-                        // Leer color RGB del píxel
                         vec3 color = texture2D(uTexture, vec2(x, y)).rgb;
-                        
-                        // Convertir color (0 a 1) a posición real (min a max)
                         vec3 newPosition = uMinPos + color * (uMaxPos - uMinPos);
-                        
                         gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
                     }
                 `,
                 fragmentShader: `
                     varying vec2 vUv;
                     void main() {
-                        // Color simple basado en UVs para dar profundidad
                         gl_FragColor = vec4(vUv.x, vUv.y, 1.0, 1.0);
                     }
                 `,
-                wireframe: true // Cambiar a 'false' para ver la malla sólida
+                wireframe: true
             });
 
-            // 6. Carga del Modelo GLB
             const gltfLoader = new GLTFLoader();
             gltfLoader.load(CONFIG.modelPath, (gltf) => {
                 model = gltf.scene;
@@ -149,10 +124,10 @@
                     }
                 });
                 scene.add(model);
-                document.getElementById('info').innerHTML = "Visor VAT Activo<br>Sube tu modelo y textura a la carpeta.";
+                document.getElementById('info').innerHTML = "Visor VAT Activo<br>Modelo: my_mesh_data.gib";
             }, undefined, (err) => {
-                console.error("Error cargando el modelo GLB. Verifica que el nombre sea correcto.");
-                document.getElementById('info').innerHTML = "Error: No se encontró el modelo.glb";
+                console.error("Error cargando el archivo:", err);
+                document.getElementById('info').innerHTML = "Error cargando modelo. Verifica que sea un GLB real.";
             });
 
             animate();
@@ -160,13 +135,10 @@
 
         function animate() {
             requestAnimationFrame(animate);
-            
             if (vatMaterial) {
-                // Avanza el tiempo para la animación en loop
                 const time = (Date.now() * 0.03) % CONFIG.totalFrames; 
                 vatMaterial.uniforms.uTime.value = time;
             }
-            
             renderer.render(scene, camera);
         }
 
