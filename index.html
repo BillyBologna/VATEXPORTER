@@ -8,15 +8,22 @@
   html, body { margin: 0; height: 100%; background: #1a1c22; overflow: hidden; font-family: system-ui, sans-serif; }
   canvas { display: block; }
   #ui {
-    position: fixed; top: 12px; left: 12px; width: 250px; color: #dde; font-size: 13px;
+    position: fixed; top: 12px; left: 12px; width: 260px; color: #dde; font-size: 13px;
     background: rgba(0,0,0,.55); padding: 10px 12px; border-radius: 8px; max-height: calc(100% - 40px); overflow: auto;
   }
   #ui h4 { margin: 10px 0 2px; font-size: 12px; color: #9ab; text-transform: uppercase; letter-spacing: .05em; }
   #ui label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 5px; }
   #ui input[type=range] { flex: 1; min-width: 0; }
   #ui input[type=file] { width: 100%; font-size: 11px; margin-top: 4px; }
-  #err { position: fixed; bottom: 12px; left: 12px; color: #ff8080; font-size: 13px; max-width: 80%; }
+  #ui select { flex: 1; }
   .val { min-width: 34px; text-align: right; color: #9ab; }
+  #loading {
+    position: fixed; inset: 0; background: #1a1c22; color: #dde; display: flex;
+    flex-direction: column; align-items: center; justify-content: center; gap: 10px; font-size: 14px; z-index: 10;
+  }
+  #bar { width: 240px; height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
+  #bar > div { height: 100%; width: 0%; background: #6cf; transition: width .1s; }
+  #err { position: fixed; bottom: 12px; left: 12px; color: #ff8080; font-size: 13px; max-width: 80%; }
 </style>
 <script type="importmap">
 {
@@ -28,8 +35,12 @@
 </script>
 </head>
 <body>
-<div id="ui">
-  <div id="info">Cargando…</div>
+<div id="loading"><div>Cargando VAT…</div><div id="bar"><div id="barfill"></div></div><div id="loadtxt"></div></div>
+<div id="ui" style="display:none">
+  <div id="info">—</div>
+
+  <h4>Modelo</h4>
+  <label>Elegir <select id="modelSel"></select></label>
 
   <h4>Reproducción</h4>
   <label>Velocidad <input id="speed" type="range" min="0" max="3" step="0.05" value="1"></label>
@@ -37,7 +48,7 @@
   <label>Frame <input id="frame" type="range" min="0" max="1" step="0.01" value="0"></label>
 
   <h4>Instancias</h4>
-  <label>Cantidad <input id="count" type="range" min="1" max="2500" step="1" value="1"><span class="val" id="countv">1</span></label>
+  <label>Cantidad <input id="count" type="range" min="1" max="1000" step="1" value="1"><span class="val" id="countv">1</span></label>
   <label><span><input id="rand" type="checkbox" checked> Desfase aleatorio</span></label>
 
   <h4>Material</h4>
@@ -54,20 +65,33 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { loadVAT, checkVATSupport } from './vat.js';
 
 // ====== CONFIG ======
-const BASE = new URLSearchParams(location.search).get('base') || './my_mesh';
-const TARGET_SIZE = 4;       // tamaño en escena de UNA instancia (todo su recorrido)
-const MAX_INSTANCES = 2500;
+// Puedes probar varios modelos en el mismo visor sin tocar el código de carga:
+// añade una entrada aquí, o abre la página con ?base=./nombre
+const MODELS = {
+  'Esfera (my_mesh)': './my_mesh',
+  'Ola (deformación real)': './wave',
+};
+const qBase = new URLSearchParams(location.search).get('base');
+const TARGET_SIZE = 4;
 // ====================
 
 const $ = (id) => document.getElementById(id);
-const bust = `?v=${Date.now()}`;
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
+
+// --- chequeo de soporte, antes de intentar cargar nada ---
+const support = checkVATSupport(renderer);
+if (!support.ok) {
+  $('loading').innerHTML = `<div style="max-width:280px;text-align:center">${support.reason}</div>`;
+  throw new Error(support.reason);
+}
+if (support.reason) console.warn('vat.js:', support.reason);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1c22);
@@ -85,209 +109,8 @@ controls.enableDamping = true;
 const grid = new THREE.GridHelper(10, 20, 0x444455, 0x2a2c35);
 scene.add(grid);
 
-// ---------------------------------------------------------------------------
-// GLSL inyectado en MeshStandardMaterial
-// ---------------------------------------------------------------------------
-const TIME = /* glsl */`
-  float vf = uFrame;
-  #ifdef USE_INSTANCING
-    vf += aPhase;
-  #endif
-  vf = mod(vf, uFrames);
-  float f0 = floor(vf);
-  float f1 = mod(f0 + 1.0, uFrames);
-  float ft = fract(vf);
-`;
-
-const SOFT_DECL = /* glsl */`
-  uniform sampler2D uPos;
-  uniform sampler2D uNrm;
-  uniform sampler2D uCol;
-  uniform sampler2D uTan;
-  uniform float uFrames, uTileH, uW, uH, uFrame, uOffsetMode;
-  attribute float vid;
-  #ifdef USE_INSTANCING
-    attribute float aPhase;
-  #endif
-  varying vec4 vVatCol;
-`;
-const SOFT_CALC = TIME + /* glsl */`
-  float tile = floor(vid / uTileH);
-  float rowY = vid - tile * uTileH;
-  float vv = (rowY + 0.5) / uH;
-  vec2 uvA = vec2((tile * uFrames + f0 + 0.5) / uW, vv);
-  vec2 uvB = vec2((tile * uFrames + f1 + 0.5) / uW, vv);
-  vec3 vatP = mix(texture2D(uPos, uvA).xyz, texture2D(uPos, uvB).xyz, ft);
-  vec3 vatN = normalize(mix(texture2D(uNrm, uvA).xyz, texture2D(uNrm, uvB).xyz, ft));
-  if (uOffsetMode > 0.5) vatP += position;
-  #ifdef VAT_COL
-    vVatCol = mix(texture2D(uCol, uvA), texture2D(uCol, uvB), ft);
-  #endif
-  vec3 vatT = vec3(1.0, 0.0, 0.0);
-  float vatTw = 1.0;
-  #ifdef VAT_TAN
-    vec4 tA = texture2D(uTan, uvA);
-    vec4 tB = texture2D(uTan, uvB);
-    vatT = normalize(mix(tA.xyz, tB.xyz, ft));
-    vatTw = tA.w;
-  #endif
-`;
-
-const RIGID_DECL = /* glsl */`
-  uniform sampler2D uPos;
-  uniform sampler2D uRot;
-  uniform float uFrames, uW, uH, uFrame;
-  attribute float piece;
-  #ifdef USE_INSTANCING
-    attribute float aPhase;
-  #endif
-  varying vec4 vVatCol;
-  vec3 qrot(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }
-`;
-const RIGID_CALC = TIME + /* glsl */`
-  float vv = (piece + 0.5) / uH;
-  vec2 uvA = vec2((f0 + 0.5) / uW, vv);
-  vec2 uvB = vec2((f1 + 0.5) / uW, vv);
-  vec4 pa = texture2D(uPos, uvA);
-  vec4 pb = texture2D(uPos, uvB);
-  vec4 qa = texture2D(uRot, uvA);
-  vec4 qb = texture2D(uRot, uvB);
-  if (dot(qa, qb) < 0.0) qb = -qb;
-  vec4 q = normalize(mix(qa, qb, ft));
-  vec4 p = mix(pa, pb, ft);
-  vec3 vatP = p.xyz + qrot(q, position * p.w);
-  vec3 vatN = qrot(q, normal);
-  vec3 vatT = qrot(q, vec3(1.0, 0.0, 0.0));
-  float vatTw = 1.0;
-`;
-
-function makeMaterial(U, { rigid, hasCol, hasTan }) {
-  const mat = new THREE.MeshStandardMaterial({ color: 0xc0ccdd, metalness: 0.1, roughness: 0.55, side: THREE.DoubleSide });
-  mat.defines = {};
-  if (hasCol) mat.defines.VAT_COL = '';
-  if (hasTan) mat.defines.VAT_TAN = '';
-  mat.customProgramCacheKey = () => (rigid ? 'vat-rigid' : 'vat-soft') + (hasCol ? '-col' : '') + (hasTan ? '-tan' : '');
-  mat.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, U);
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\n' + (rigid ? RIGID_DECL : SOFT_DECL))
-      .replace('#include <beginnormal_vertex>',
-        (rigid ? RIGID_CALC : SOFT_CALC) +
-        '\nvec3 objectNormal = vatN;\n#ifdef USE_TANGENT\nvec3 objectTangent = vatT;\n#endif')
-      .replace('#include <normal_vertex>',
-        '#include <normal_vertex>\n#ifdef USE_TANGENT\nvBitangent = normalize( cross( vNormal, vTangent ) * vatTw );\n#endif')
-      .replace('#include <begin_vertex>', 'vec3 transformed = vatP;');
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\n#ifdef VAT_COL\nvarying vec4 vVatCol;\n#endif')
-      .replace('#include <color_fragment>', '#include <color_fragment>\n#ifdef VAT_COL\ndiffuseColor *= vVatCol;\n#endif');
-  };
-  return mat;
-}
-
-// ---------------------------------------------------------------------------
-// Carga
-// ---------------------------------------------------------------------------
-async function fetchTex(url, meta, W, H) {
-  const res = await fetch(url + bust);
-  if (!res.ok) throw new Error(`No se pudo cargar ${url}`);
-  const buf = await res.arrayBuffer();
-  const half = meta.dtype === 'float16';
-  const data = half ? new Uint16Array(buf) : new Float32Array(buf);
-  if (data.length !== W * H * 4) throw new Error(`${url}: tamaño inesperado (${data.length} vs ${W * H * 4})`);
-  const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat, half ? THREE.HalfFloatType : THREE.FloatType);
-  tex.minFilter = tex.magFilter = THREE.NearestFilter;   // la interpolación entre frames la hace el shader
-  tex.generateMipmaps = false;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-async function loadVAT(base) {
-  const meta = await (await fetch(`${base}_vat.json${bust}`)).json();
-  const dir = base.slice(0, base.lastIndexOf('/') + 1);
-  const rigid = meta.mode === 'rigid';
-  const frames = meta.frames;
-  const W = meta.texture?.[0] ?? frames;
-  const H = meta.texture?.[1] ?? meta.vertices;
-  const optFile = (name) => (meta.files?.[name]?.bin ? dir + meta.files[name].bin : null);
-  const file = (name) => {
-    const f = meta.files?.[name]?.bin;
-    if (meta.files && !f) return null;
-    return f ? dir + f : `${base}_${name}.bin`;
-  };
-  if (meta.files && !meta.files.pos?.bin) throw new Error('Este export no incluye .bin (activa ".bin crudo" en el exportador).');
-
-  const U = {
-    uFrame: { value: 0 }, uFrames: { value: frames }, uW: { value: W }, uH: { value: H },
-    uTileH: { value: meta.tile_height ?? meta.vertices },
-    uOffsetMode: { value: meta.position_mode === 'offset' ? 1 : 0 },
-    uPos: { value: await fetchTex(file('pos'), meta, W, H) },
-  };
-
-  const geo = new THREE.BufferGeometry();
-  const box = new THREE.Box3();
-  let hasCol = false, hasTan = false;
-
-  if (rigid) {
-    const m = meta.mesh;
-    if (!m) throw new Error('El JSON no incluye la malla (activa "Incluir malla en el JSON").');
-    U.uRot = { value: await fetchTex(file('rot'), meta, W, H) };
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(m.position), 3));
-    geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(m.normal), 3));
-    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(m.uv), 2));
-    geo.setAttribute('piece', new THREE.BufferAttribute(new Float32Array(m.piece), 1));
-    geo.setIndex(m.index);
-    // caja = recorrido de traslaciones ampliado con el radio de las piezas
-    geo.computeBoundingSphere();
-    const r = geo.boundingSphere.radius + geo.boundingSphere.center.length();
-    box.min.fromArray(meta.bbox_min).addScalar(-r);
-    box.max.fromArray(meta.bbox_max).addScalar(r);
-  } else {
-    U.uNrm = { value: await fetchTex(file('nrm'), meta, W, H) };
-    if (optFile('col')) { U.uCol = { value: await fetchTex(optFile('col'), meta, W, H) }; hasCol = true; }
-    if (optFile('tan')) { U.uTan = { value: await fetchTex(optFile('tan'), meta, W, H) }; hasTan = true; }
-    const count = meta.vid.length;
-    const basePos = meta.position ? new Float32Array(meta.position) : new Float32Array(count * 3);
-    geo.setAttribute('position', new THREE.BufferAttribute(basePos, 3));
-    if (hasTan) geo.setAttribute('tangent', new THREE.BufferAttribute(new Float32Array(count * 4), 4)); // marcador: activa USE_TANGENT
-    geo.setAttribute('vid', new THREE.BufferAttribute(new Float32Array(meta.vid), 1));
-    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(meta.uv), 2));
-    geo.setIndex(meta.index);
-    box.min.fromArray(meta.bbox_min);
-    box.max.fromArray(meta.bbox_max);
-    if (U.uOffsetMode.value && meta.position) {
-      const bb = new THREE.Box3().setFromArray(basePos);
-      box.min.add(bb.min); box.max.add(bb.max);
-    }
-  }
-
-  // atributo por instancia: desfase de tiempo (en frames)
-  const phase = new THREE.InstancedBufferAttribute(new Float32Array(MAX_INSTANCES), 1);
-  geo.setAttribute('aPhase', phase);
-
-  const mat = makeMaterial(U, { rigid, hasCol, hasTan });
-  const mesh = new THREE.InstancedMesh(geo, mat, MAX_INSTANCES);
-  mesh.count = 1;
-  mesh.frustumCulled = false;
-
-  // Un contenedor escala y centra: TARGET_SIZE = tamaño de UNA instancia
-  const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
-  const maxDim = Math.max(size.x, size.y, size.z) || 1;
-  const s = TARGET_SIZE / maxDim;
-  const holder = new THREE.Group();
-  holder.scale.setScalar(s);
-  holder.position.set(-center.x * s, -box.min.y * s, -center.z * s);
-  holder.add(mesh);
-
-  return { holder, mesh, mat, phase, U, meta, rigid, hasTan, s, spacing: maxDim * 1.2, height: size.y * s };
-}
-
-// ---------------------------------------------------------------------------
-// Instancias y cámara
-// ---------------------------------------------------------------------------
-let vat = null;
-let frame = 0;
-let randoms = null;
+let current = null;   // VAT activo
+let randoms = Float32Array.from({ length: 1000 }, Math.random);
 
 function layout() {
   const n = parseInt($('count').value, 10);
@@ -297,82 +120,111 @@ function layout() {
   const m = new THREE.Matrix4();
   for (let i = 0; i < n; i++) {
     const gx = i % cols, gz = Math.floor(i / cols);
-    m.makeTranslation((gx - (cols - 1) / 2) * vat.spacing, 0, (gz - (rows - 1) / 2) * vat.spacing);
-    vat.mesh.setMatrixAt(i, m);
-    vat.phase.array[i] = i === 0 || !useRand ? 0 : randoms[i] * vat.meta.frames;
+    m.makeTranslation((gx - (cols - 1) / 2) * current.spacing, 0, (gz - (rows - 1) / 2) * current.spacing);
+    current.setInstanceMatrix(i, m);
+    current.setInstancePhase(i, i === 0 || !useRand ? 0 : randoms[i] * current.meta.frames);
   }
-  vat.mesh.count = n;
-  vat.mesh.instanceMatrix.needsUpdate = true;
-  vat.phase.needsUpdate = true;
+  current.setInstanceCount(n);
   $('countv').textContent = n;
 
-  const extent = Math.max(cols, rows) * vat.spacing * vat.s;
+  const extent = Math.max(cols, rows) * current.spacing * current.object.scale.x;
   const dist = Math.max(TARGET_SIZE, extent) * 1.8;
-  camera.position.set(0, vat.height * 0.6 + dist * 0.35, dist);
-  controls.target.set(0, vat.height / 2, 0);
+  camera.position.set(0, current.height * 0.6 + dist * 0.35, dist);
+  controls.target.set(0, current.height / 2, 0);
   grid.scale.setScalar(Math.max(1, extent / 10));
 }
 
 function applyMaterial() {
-  vat.mat.color.set($('color').value);
-  vat.mat.metalness = parseFloat($('metal').value);
-  vat.mat.roughness = parseFloat($('rough').value);
+  current.material.color.set($('color').value);
+  current.material.metalness = parseFloat($('metal').value);
+  current.material.roughness = parseFloat($('rough').value);
 }
 
-try {
-  vat = await loadVAT(BASE);
-  randoms = Float32Array.from({ length: MAX_INSTANCES }, Math.random);
-  scene.add(vat.holder);
-  const m = vat.meta;
-  $('info').textContent =
-    `${m.mode === 'rigid' ? 'Rigid' : 'Soft'} · ${m.frames} frames · ${m.vertices} ${m.mode === 'rigid' ? 'piezas' : 'filas'} · ` +
-    `${m.fps.toFixed(2)} fps · ${m.dtype ?? 'float32'}${(m.tiles ?? 1) > 1 ? ' · ' + m.tiles + ' tiles' : ''}`;
-  $('frame').max = m.frames - 1;
-  layout();
-  applyMaterial();
+async function switchModel(base) {
+  $('loading').style.display = 'flex';
+  $('ui').style.display = 'none';
+  $('err').textContent = '';
+  $('barfill').style.width = '0%';
 
-  $('count').max = MAX_INSTANCES;
-  $('count').oninput = layout;
-  $('rand').onchange = layout;
-  ['color', 'metal', 'rough'].forEach((id) => ($(id).oninput = applyMaterial));
-  if (!vat.hasTan) {
-    $('nmap').disabled = true;
-    $('nmapnote').textContent = 'Normal map: exporta con "tangentes" activado.';
+  if (current) { scene.remove(current.object); current.dispose(); current = null; }
+
+  try {
+    const vat = await loadVAT(base, {
+      size: TARGET_SIZE,
+      maxInstances: 1000,
+      onProgress: (p) => {
+        if (p.percent != null) {
+          $('barfill').style.width = `${Math.round(p.percent * 100)}%`;
+          $('loadtxt').textContent = `${p.part} — ${Math.round(p.percent * 100)}%`;
+        } else {
+          $('loadtxt').textContent = `${p.part} — ${(p.received / 1e6).toFixed(1)} MB`;
+        }
+      },
+    });
+    current = vat;
+    scene.add(vat.object);
+
+    const m = vat.meta;
+    $('info').textContent =
+      `${m.mode === 'rigid' ? 'Rigid' : 'Soft'} · ${m.frames} frames · ${m.vertices} ${m.mode === 'rigid' ? 'piezas' : 'filas'} · ` +
+      `${m.fps.toFixed(2)} fps · ${m.dtype ?? 'float32'}${(m.tiles ?? 1) > 1 ? ' · ' + m.tiles + ' tiles' : ''}`;
+    $('frame').max = m.frames - 1;
+    $('count').value = 1;
+    layout();
+    applyMaterial();
+    if (!vat.hasNormalMapSlot) {
+      $('nmap').disabled = true;
+      $('nmapnote').textContent = 'Normal map: este export no tiene tangentes.';
+    } else {
+      $('nmap').disabled = false;
+      $('nmapnote').textContent = '';
+    }
+    $('ui').style.display = 'block';
+  } catch (e) {
+    console.error(e);
+    $('loadtxt').textContent = '';
+    $('err').textContent = 'No se pudo cargar el modelo. Revisa la consola para más detalle.';
+  } finally {
+    $('loading').style.display = 'none';
   }
-  $('nmap').onchange = (e) => {
-    const f = e.target.files[0];
-    if (!f) return;
-    new THREE.TextureLoader().load(URL.createObjectURL(f), (t) => {
-      vat.mat.normalMap = t;
-      vat.mat.needsUpdate = true;
-    });
-  };
-  $('tex').onchange = (e) => {
-    const f = e.target.files[0];
-    if (!f) return;
-    new THREE.TextureLoader().load(URL.createObjectURL(f), (t) => {
-      t.colorSpace = THREE.SRGBColorSpace;
-      vat.mat.map = t;
-      vat.mat.needsUpdate = true;
-    });
-  };
-} catch (e) {
-  console.error(e);
-  $('info').textContent = 'Error';
-  $('err').textContent = e.message + ' — ¿estás usando un servidor local (no file://)?';
 }
+
+// --- selector de modelo ---
+for (const name of Object.keys(MODELS)) {
+  const o = document.createElement('option'); o.value = MODELS[name]; o.textContent = name;
+  $('modelSel').appendChild(o);
+}
+if (qBase) {
+  const o = document.createElement('option'); o.value = qBase; o.textContent = qBase; o.selected = true;
+  $('modelSel').appendChild(o);
+}
+$('modelSel').onchange = (e) => switchModel(e.target.value);
+
+$('count').oninput = layout;
+$('rand').onchange = layout;
+['color', 'metal', 'rough'].forEach((id) => ($(id).oninput = applyMaterial));
+$('tex').onchange = (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  new THREE.TextureLoader().load(URL.createObjectURL(f), (t) => { t.colorSpace = THREE.SRGBColorSpace; current.setColorMap(t); });
+};
+$('nmap').onchange = (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  new THREE.TextureLoader().load(URL.createObjectURL(f), (t) => current.setNormalMap(t));
+};
+
+switchModel(qBase || Object.values(MODELS)[0]);
 
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
-  if (vat) {
+  if (current) {
     if ($('pause').checked) {
-      frame = parseFloat($('frame').value);
+      current.frame = parseFloat($('frame').value);
     } else {
-      frame = (frame + dt * vat.meta.fps * parseFloat($('speed').value)) % vat.meta.frames;
-      $('frame').value = frame;
+      current.speed = parseFloat($('speed').value);
+      current.update(dt);
+      $('frame').value = current.frame;
     }
-    vat.U.uFrame.value = frame;
   }
   controls.update();
   renderer.render(scene, camera);
