@@ -367,6 +367,15 @@ class VAT {
       // aoMap necesita un segundo canal UV; reutilizamos el UV existente como uv2.
       this.mesh.geometry.setAttribute('uv2', this.mesh.geometry.getAttribute('uv'));
     }
+    // En PBR el slider y el mapa del mismo canal se MULTIPLICAN, no uno reemplaza
+    // al otro (material.color * albedoMap, material.roughness * roughnessMap, etc.).
+    // Para que solo mande la textura mientras está activa (sin doble control ni
+    // tinte accidental), se neutraliza el valor del slider al valor "no-op" de esa
+    // multiplicación (blanco = 1.0 por canal; 1.0 para escalares). loadVAT()/la UI
+    // se encargan de deshabilitar visualmente el slider en ese mismo momento.
+    if (channel === 'map') this.material.color.set(texture ? 0xffffff : this.material.color);
+    if (channel === 'roughnessMap' && texture) this.material.roughness = 1.0;
+    if (channel === 'metalnessMap' && texture) this.material.metalness = 1.0;
     this.material.needsUpdate = true;
   }
   /** Compatibilidad con el nombre anterior. */

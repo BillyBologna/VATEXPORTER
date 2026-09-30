@@ -8,7 +8,7 @@
   html, body { margin: 0; height: 100%; background: #1a1c22; overflow: hidden; font-family: system-ui, sans-serif; }
   canvas { display: block; }
   #ui {
-    position: fixed; top: 12px; left: 12px; width: 260px; color: #dde; font-size: 13px;
+    position: fixed; top: 12px; left: 12px; width: 390px; color: #dde; font-size: 13px;
     background: rgba(0,0,0,.55); padding: 10px 12px; border-radius: 8px; max-height: calc(100% - 40px); overflow: auto;
   }
   #ui h4 { margin: 10px 0 2px; font-size: 12px; color: #9ab; text-transform: uppercase; letter-spacing: .05em; }
@@ -25,8 +25,8 @@
   #bar > div { height: 100%; width: 0%; background: #6cf; transition: width .1s; }
   #err { position: fixed; bottom: 12px; left: 12px; color: #ff8080; font-size: 13px; max-width: 80%; }
   #stats {
-    position: fixed; top: 12px; right: 12px; color: #9f9; font: 11px/1.5 monospace;
-    background: rgba(0,0,0,.55); padding: 8px 10px; border-radius: 8px; white-space: pre;
+    position: fixed; top: 12px; right: 12px; color: #9f9; font: 17px/1.5 monospace;
+    background: rgba(0,0,0,.55); padding: 12px 15px; border-radius: 8px; white-space: pre;
   }
   #stats .warn { color: #fc6; }
   fieldset { border: 1px solid #334; border-radius: 6px; margin-top: 8px; padding: 6px 8px; }
@@ -35,6 +35,8 @@
   .maprow span { width: 78px; flex-shrink: 0; }
   .maprow input[type=file] { flex: 1; min-width: 0; font-size: 10px; }
   .maprow button { flex-shrink: 0; width: 18px; height: 18px; line-height: 1; padding: 0; }
+  input:disabled { opacity: .35; }
+  .maprow.active { color: #6cf; }
 </style>
 <script type="importmap">
 {
@@ -188,6 +190,18 @@ function applyGlass() {
   });
 }
 
+// Qué slider queda controlado por cada canal de textura (se multiplican en PBR,
+// así que mientras la textura está activa el slider se apaga para no confundir).
+const SLIDER_FOR_CHANNEL = { map: 'color', roughnessMap: 'rough', metalnessMap: 'metal' };
+
+function setSliderLockedByTexture(channel, locked) {
+  const id = SLIDER_FOR_CHANNEL[channel];
+  if (!id) return;              // AO/Emissive/Alpha/Normal no tienen slider equivalente
+  $(id).disabled = locked;
+  const row = document.querySelector(`[data-ch="${channel}"]`)?.closest('.maprow');
+  row?.classList.toggle('active', locked);
+}
+
 function wireMapInputs() {
   document.querySelectorAll('[data-ch]').forEach((input) => {
     input.onchange = (e) => {
@@ -195,15 +209,23 @@ function wireMapInputs() {
       if (!f || !current) return;
       const ch = input.dataset.ch;
       const srgb = input.dataset.srgb === '1';
-      new THREE.TextureLoader().load(URL.createObjectURL(f), (t) => current.setTexture(ch, t, { srgb }));
+      new THREE.TextureLoader().load(URL.createObjectURL(f), (t) => {
+        current.setTexture(ch, t, { srgb });
+        setSliderLockedByTexture(ch, true);
+        if (ch === 'map') $('color').value = '#ffffff';
+        if (ch === 'roughnessMap') $('rough').value = 1;
+        if (ch === 'metalnessMap') $('metal').value = 1;
+      });
     };
   });
   document.querySelectorAll('[data-clear]').forEach((btn) => {
     btn.onclick = () => {
       if (!current) return;
-      current.setTexture(btn.dataset.clear, null);
-      const input = document.querySelector(`[data-ch="${btn.dataset.clear}"]`);
+      const ch = btn.dataset.clear;
+      current.setTexture(ch, null);
+      const input = document.querySelector(`[data-ch="${ch}"]`);
       if (input) input.value = '';
+      setSliderLockedByTexture(ch, false);
     };
   });
 }
@@ -277,6 +299,7 @@ async function switchModel(base) {
     $('count').value = 1;
     layout();
     document.querySelectorAll('[data-ch]').forEach((i) => (i.value = ''));
+    Object.keys(SLIDER_FOR_CHANNEL).forEach((ch) => setSliderLockedByTexture(ch, false));
     $('glassOn').checked = false;
     $('opacity').value = 1;
     applyMaterial();
