@@ -156,10 +156,15 @@ const RIGID_CALC = TIME + /* glsl */`
 `;
 
 function makeMaterial(U, { rigid, hasCol, hasTan }, matOptions = {}) {
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0xc0ccdd, metalness: 0.1, roughness: 0.55, side: THREE.DoubleSide, ...matOptions,
+  // MeshPhysicalMaterial extiende a MeshStandardMaterial con transmission/ior/thickness
+  // (vidrio, agua, refracción tipo Substance Painter / Arnold) sin perder nada del hook de VAT.
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: 0xc0ccdd, metalness: 0.1, roughness: 0.55, side: THREE.DoubleSide,
+    transmission: 0, ior: 1.5, thickness: 0, ...matOptions,
   });
-  mat.defines = {};
+  // OJO: MeshPhysicalMaterial pone sus propios defines (STANDARD, PHYSICAL) en el
+  // constructor; sobreescribir mat.defines aquí los borraría y rompería el modo vidrio
+  // (transmission/ior) de forma silenciosa hasta que se activa. Por eso se AGREGA, no se reasigna.
   if (hasCol) mat.defines.VAT_COL = '';
   if (hasTan) mat.defines.VAT_TAN = '';
   mat.customProgramCacheKey = () => (rigid ? 'vat-rigid' : 'vat-soft') + (hasCol ? '-col' : '') + (hasTan ? '-tan' : '');
@@ -215,6 +220,8 @@ class VAT {
     this._maxInstances = maxInstances;
     this._holderScale = holderScale;
     this._holderPos = holderPos;
+    this._matCtx = null;   // lo rellena loadVAT(): { rigid, hasCol, hasTan } para poder reconstruir el material
+
 
     this._frame = 0;
     this._speed = 1;
@@ -341,17 +348,59 @@ class VAT {
     if (this.material.normalMap) this.material.normalMap.dispose();
   }
 
-  // -------------------- material --------------------
-  setColorMap(texture) {
-    this.material.map = texture;
-    this.material.needsUpdate = true;
-  }
-  setNormalMap(texture) {
-    if (!this.hasNormalMapSlot) {
+  // -------------------- material / canales PBR --------------------
+  // channel: 'map' (albedo), 'normalMap', 'roughnessMap', 'metalnessMap',
+  //          'aoMap', 'emissiveMap', 'alphaMap'
+  setTexture(channel, texture, { srgb = false } = {}) {
+    if (channel === 'normalMap' && !this.hasNormalMapSlot) {
       console.warn('vat.js: este VAT se exportó sin tangentes; el normal map puede verse incorrecto.');
     }
-    this.material.normalMap = texture;
+    if (texture) {
+      texture.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+      texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    }
+    this.material[channel] = texture || null;
+    if (channel === 'alphaMap' && texture) {
+      this.material.transparent = true;
+    }
+    if (channel === 'aoMap' && texture) {
+      // aoMap necesita un segundo canal UV; reutilizamos el UV existente como uv2.
+      this.mesh.geometry.setAttribute('uv2', this.mesh.geometry.getAttribute('uv'));
+    }
     this.material.needsUpdate = true;
+  }
+  /** Compatibilidad con el nombre anterior. */
+  setColorMap(texture) { this.setTexture('map', texture, { srgb: true }); }
+  setNormalMap(texture) { this.setTexture('normalMap', texture); }
+
+  /**
+   * Activa/ajusta el modo vidrio (transmisión + IOR), como el Glass BSDF de Arnold.
+   *
+   * Nota técnica: cuando `transmission` pasa de 0 a >0 (o viceversa), Three.js cambia
+   * de rama de shader (chunk de refracción IBL) y `material.needsUpdate = true` no
+   * siempre recompila bien ese caso con onBeforeCompile — queda un shader a medio
+   * generar y el navegador tira un error de GLSL. Por eso, SOLO al cruzar ese límite,
+   * reconstruimos el material desde cero; para solo mover el slider de IOR/grosor con
+   * el vidrio ya activo, basta con needsUpdate.
+   */
+  setGlass({ transmission = 1, ior = 1.5, thickness = 0.5, roughness = 0.05 } = {}) {
+    const wasOn = this.material.transmission > 0;
+    const willBeOn = transmission > 0;
+    if (wasOn !== willBeOn && this._matCtx) {
+      const keep = { color: this.material.color.clone(), metalness: this.material.metalness,
+                     map: this.material.map, normalMap: this.material.normalMap,
+                     roughnessMap: this.material.roughnessMap, metalnessMap: this.material.metalnessMap,
+                     aoMap: this.material.aoMap, emissiveMap: this.material.emissiveMap,
+                     alphaMap: this.material.alphaMap, opacity: this.material.opacity,
+                     transparent: this.material.transparent };
+      const old = this.material;
+      this.material = makeMaterial(this._U, this._matCtx, { ...keep, transmission, ior, thickness, roughness });
+      this.mesh.material = this.material;
+      old.dispose();
+    } else {
+      Object.assign(this.material, { transmission, ior, thickness, roughness });
+      this.material.needsUpdate = true;
+    }
   }
 }
 
@@ -474,6 +523,7 @@ export async function loadVAT(base, options = {}) {
     object: holder, mesh, mat, phase, U, meta, rigid, hasTan, maxInstances,
     holderScale: s, holderPos: holder.position.clone(),
   });
+  vat._matCtx = { rigid, hasCol, hasTan };
   vat.spacing = maxDim * 1.2;   // sugerido para acomodar instancias en cuadrícula
   vat.height = dims.y * s;
 

@@ -24,6 +24,17 @@
   #bar { width: 240px; height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
   #bar > div { height: 100%; width: 0%; background: #6cf; transition: width .1s; }
   #err { position: fixed; bottom: 12px; left: 12px; color: #ff8080; font-size: 13px; max-width: 80%; }
+  #stats {
+    position: fixed; top: 12px; right: 12px; color: #9f9; font: 11px/1.5 monospace;
+    background: rgba(0,0,0,.55); padding: 8px 10px; border-radius: 8px; white-space: pre;
+  }
+  #stats .warn { color: #fc6; }
+  fieldset { border: 1px solid #334; border-radius: 6px; margin-top: 8px; padding: 6px 8px; }
+  fieldset legend { font-size: 11px; color: #9ab; padding: 0 4px; }
+  .maprow { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+  .maprow span { width: 78px; flex-shrink: 0; }
+  .maprow input[type=file] { flex: 1; min-width: 0; font-size: 10px; }
+  .maprow button { flex-shrink: 0; width: 18px; height: 18px; line-height: 1; padding: 0; }
 </style>
 <script type="importmap">
 {
@@ -52,14 +63,37 @@
   <label><span><input id="rand" type="checkbox" checked> Desfase aleatorio</span></label>
 
   <h4>Material</h4>
-  <label>Color <input id="color" type="color" value="#c0ccdd"></label>
+  <label>Color base <input id="color" type="color" value="#c0ccdd"></label>
   <label>Metal <input id="metal" type="range" min="0" max="1" step="0.01" value="0.1"></label>
   <label>Rugosidad <input id="rough" type="range" min="0" max="1" step="0.01" value="0.55"></label>
-  <label>Textura <input id="tex" type="file" accept="image/*"></label>
-  <label>Normal map <input id="nmap" type="file" accept="image/*"></label>
-  <div id="nmapnote" style="font-size:11px;color:#9ab"></div>
+
+  <fieldset>
+    <legend>Canales de textura (estilo Substance Painter)</legend>
+    <div class="maprow"><span>Albedo</span><input data-ch="map" data-srgb="1" type="file" accept="image/*"><button data-clear="map">×</button></div>
+    <div class="maprow"><span>Normal</span><input data-ch="normalMap" type="file" accept="image/*"><button data-clear="normalMap">×</button></div>
+    <div class="maprow"><span>Roughness</span><input data-ch="roughnessMap" type="file" accept="image/*"><button data-clear="roughnessMap">×</button></div>
+    <div class="maprow"><span>Metalness</span><input data-ch="metalnessMap" type="file" accept="image/*"><button data-clear="metalnessMap">×</button></div>
+    <div class="maprow"><span>AO</span><input data-ch="aoMap" type="file" accept="image/*"><button data-clear="aoMap">×</button></div>
+    <div class="maprow"><span>Emissive</span><input data-ch="emissiveMap" data-srgb="1" type="file" accept="image/*"><button data-clear="emissiveMap">×</button></div>
+    <div class="maprow"><span>Alpha</span><input data-ch="alphaMap" type="file" accept="image/*"><button data-clear="alphaMap">×</button></div>
+    <div id="nmapnote" style="font-size:11px;color:#9ab;margin-top:4px"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Vidrio / refracción (tipo Arnold Glass)</legend>
+    <label><span><input id="glassOn" type="checkbox"> Activar</span></label>
+    <label>Transmisión <input id="transmission" type="range" min="0" max="1" step="0.01" value="1" disabled></label>
+    <label>IOR <input id="ior" type="range" min="1" max="2.5" step="0.01" value="1.5" disabled></label>
+    <label>Grosor <input id="thickness" type="range" min="0" max="3" step="0.01" value="0.5" disabled></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Transparencia simple</legend>
+    <label>Opacidad <input id="opacity" type="range" min="0" max="1" step="0.01" value="1"></label>
+  </fieldset>
 </div>
 <div id="err"></div>
+<div id="stats">FPS —</div>
 
 <script type="module">
 import * as THREE from 'three';
@@ -138,6 +172,77 @@ function applyMaterial() {
   current.material.color.set($('color').value);
   current.material.metalness = parseFloat($('metal').value);
   current.material.roughness = parseFloat($('rough').value);
+  current.material.opacity = parseFloat($('opacity').value);
+  current.material.transparent = current.material.transparent || current.material.opacity < 1;
+}
+
+function applyGlass() {
+  if (!current) return;
+  const on = $('glassOn').checked;
+  ['transmission', 'ior', 'thickness'].forEach((id) => ($(id).disabled = !on));
+  current.setGlass({
+    transmission: on ? parseFloat($('transmission').value) : 0,
+    ior: parseFloat($('ior').value),
+    thickness: on ? parseFloat($('thickness').value) : 0,
+    roughness: parseFloat($('rough').value),
+  });
+}
+
+function wireMapInputs() {
+  document.querySelectorAll('[data-ch]').forEach((input) => {
+    input.onchange = (e) => {
+      const f = e.target.files[0];
+      if (!f || !current) return;
+      const ch = input.dataset.ch;
+      const srgb = input.dataset.srgb === '1';
+      new THREE.TextureLoader().load(URL.createObjectURL(f), (t) => current.setTexture(ch, t, { srgb }));
+    };
+  });
+  document.querySelectorAll('[data-clear]').forEach((btn) => {
+    btn.onclick = () => {
+      if (!current) return;
+      current.setTexture(btn.dataset.clear, null);
+      const input = document.querySelector(`[data-ch="${btn.dataset.clear}"]`);
+      if (input) input.value = '';
+    };
+  });
+}
+
+// Nota: WebGL no expone el % real de uso de GPU (ningún sitio web puede leerlo,
+// es una restricción de seguridad del navegador). Este panel muestra lo que sí
+// es medible: FPS, tiempo de frame, trabajo enviado a la GPU (triángulos/draw
+// calls) y memoria de JS/texturas.
+const statsEl = $('stats');
+let fpsHistory = [];
+let lastStatsUpdate = 0;
+function updateStats(dtMs) {
+  fpsHistory.push(1000 / dtMs);
+  if (fpsHistory.length > 30) fpsHistory.shift();
+  const now = performance.now();
+  if (now - lastStatsUpdate < 250) return;
+  lastStatsUpdate = now;
+  const fps = fpsHistory.reduce((a, b) => a + b, 0) / fpsHistory.length;
+  const info = renderer.info;
+  const mem = performance.memory
+    ? `JS heap   : ${(performance.memory.usedJSHeapSize / 1048576).toFixed(0)} MB`
+    : `JS heap   : (no disponible en este navegador)`;
+  const warn = fps < 30 ? ' (bajo)' : '';
+  statsEl.textContent =
+    `FPS       : ${fps.toFixed(0)}${warn}
+` +
+    `Frame     : ${dtMs.toFixed(1)} ms
+` +
+    `Triángulos: ${info.render.triangles.toLocaleString()}
+` +
+    `Draw calls: ${info.render.calls}
+` +
+    `Instancias: ${current ? current.instanceCount : 0}
+` +
+    `Texturas  : ${info.memory.textures}
+` +
+    `${mem}
+` +
+    `(WebGL no expone % de GPU)`;
 }
 
 async function switchModel(base) {
@@ -171,12 +276,14 @@ async function switchModel(base) {
     $('frame').max = m.frames - 1;
     $('count').value = 1;
     layout();
+    document.querySelectorAll('[data-ch]').forEach((i) => (i.value = ''));
+    $('glassOn').checked = false;
+    $('opacity').value = 1;
     applyMaterial();
+    applyGlass();
     if (!vat.hasNormalMapSlot) {
-      $('nmap').disabled = true;
-      $('nmapnote').textContent = 'Normal map: este export no tiene tangentes.';
+      $('nmapnote').textContent = 'Normal map: este export no tiene tangentes (puede verse incorrecto).';
     } else {
-      $('nmap').disabled = false;
       $('nmapnote').textContent = '';
     }
     $('ui').style.display = 'block';
@@ -202,21 +309,19 @@ $('modelSel').onchange = (e) => switchModel(e.target.value);
 
 $('count').oninput = layout;
 $('rand').onchange = layout;
-['color', 'metal', 'rough'].forEach((id) => ($(id).oninput = applyMaterial));
-$('tex').onchange = (e) => {
-  const f = e.target.files[0]; if (!f) return;
-  new THREE.TextureLoader().load(URL.createObjectURL(f), (t) => { t.colorSpace = THREE.SRGBColorSpace; current.setColorMap(t); });
-};
-$('nmap').onchange = (e) => {
-  const f = e.target.files[0]; if (!f) return;
-  new THREE.TextureLoader().load(URL.createObjectURL(f), (t) => current.setNormalMap(t));
-};
+['color', 'metal', 'rough', 'opacity'].forEach((id) => ($(id).oninput = applyMaterial));
+['glassOn', 'transmission', 'ior', 'thickness'].forEach((id) => {
+  const el = $(id);
+  el.addEventListener(el.type === 'checkbox' ? 'change' : 'input', applyGlass);
+});
+wireMapInputs();
 
 switchModel(qBase || Object.values(MODELS)[0]);
 
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
+  updateStats(dt * 1000);
   if (current) {
     if ($('pause').checked) {
       current.frame = parseFloat($('frame').value);
