@@ -64,13 +64,16 @@
   <label>Cantidad <input id="count" type="range" min="1" max="1000" step="1" value="1"><span class="val" id="countv">1</span></label>
   <label><span><input id="rand" type="checkbox" checked> Desfase aleatorio</span></label>
 
-  <h4>Material</h4>
-  <label>Color base <input id="color" type="color" value="#c0ccdd"></label>
+  <h4>Material base</h4>
+  <label>Color <input id="color" type="color" value="#c0ccdd"></label>
   <label>Metal <input id="metal" type="range" min="0" max="1" step="0.01" value="0.1"></label>
   <label>Rugosidad <input id="rough" type="range" min="0" max="1" step="0.01" value="0.55"></label>
+  <label>Opacidad <input id="opacity" type="range" min="0" max="1" step="0.01" value="1"></label>
+  <div style="font-size:11px;color:#9ab;margin-top:2px">Transparencia simple (alpha). Para vidrio real, ver abajo.</div>
 
   <fieldset>
     <legend>Canales de textura (estilo Substance Painter)</legend>
+    <div style="font-size:11px;color:#9ab;margin-bottom:2px">Al cargar una textura, el slider de arriba que controla ese mismo canal se apaga (se multiplican, y así evitas doble control).</div>
     <div class="maprow"><span>Albedo</span><input data-ch="map" data-srgb="1" type="file" accept="image/*"><button data-clear="map">×</button></div>
     <div class="maprow"><span>Normal</span><input data-ch="normalMap" type="file" accept="image/*"><button data-clear="normalMap">×</button></div>
     <div class="maprow"><span>Roughness</span><input data-ch="roughnessMap" type="file" accept="image/*"><button data-clear="roughnessMap">×</button></div>
@@ -87,11 +90,9 @@
     <label>Transmisión <input id="transmission" type="range" min="0" max="1" step="0.01" value="1" disabled></label>
     <label>IOR <input id="ior" type="range" min="1" max="2.5" step="0.01" value="1.5" disabled></label>
     <label>Grosor <input id="thickness" type="range" min="0" max="3" step="0.01" value="0.5" disabled></label>
-  </fieldset>
-
-  <fieldset>
-    <legend>Transparencia simple</legend>
-    <label>Opacidad <input id="opacity" type="range" min="0" max="1" step="0.01" value="1"></label>
+    <label>Color de absorción <input id="attColor" type="color" value="#ffffff" disabled></label>
+    <label>Alcance absorción <input id="attDist" type="range" min="0.05" max="5" step="0.01" value="5" disabled></label>
+    <div style="font-size:11px;color:#9ab;margin-top:2px">El Grosor casi no se nota solo: combínalo con un Color de absorción distinto de blanco y un Alcance bajo — así entre más Grosor, más oscuro/teñido se ve (igual que el vidrio grueso en Arnold).</div>
   </fieldset>
 </div>
 <div id="err"></div>
@@ -181,12 +182,15 @@ function applyMaterial() {
 function applyGlass() {
   if (!current) return;
   const on = $('glassOn').checked;
-  ['transmission', 'ior', 'thickness'].forEach((id) => ($(id).disabled = !on));
+  ['transmission', 'ior', 'thickness', 'attColor', 'attDist'].forEach((id) => ($(id).disabled = !on));
   current.setGlass({
     transmission: on ? parseFloat($('transmission').value) : 0,
     ior: parseFloat($('ior').value),
     thickness: on ? parseFloat($('thickness').value) : 0,
     roughness: parseFloat($('rough').value),
+    attenuationColor: $('attColor').value,
+    // slider va de 0.05 a 5; en 5 (máximo) se trata como "sin absorción" (Infinity)
+    attenuationDistance: parseFloat($('attDist').value) >= 5 ? Infinity : parseFloat($('attDist').value),
   });
 }
 
@@ -333,7 +337,7 @@ $('modelSel').onchange = (e) => switchModel(e.target.value);
 $('count').oninput = layout;
 $('rand').onchange = layout;
 ['color', 'metal', 'rough', 'opacity'].forEach((id) => ($(id).oninput = applyMaterial));
-['glassOn', 'transmission', 'ior', 'thickness'].forEach((id) => {
+['glassOn', 'transmission', 'ior', 'thickness', 'attColor', 'attDist'].forEach((id) => {
   const el = $(id);
   el.addEventListener(el.type === 'checkbox' ? 'change' : 'input', applyGlass);
 });

@@ -392,9 +392,11 @@ class VAT {
    * reconstruimos el material desde cero; para solo mover el slider de IOR/grosor con
    * el vidrio ya activo, basta con needsUpdate.
    */
-  setGlass({ transmission = 1, ior = 1.5, thickness = 0.5, roughness = 0.05 } = {}) {
+  setGlass({ transmission = 1, ior = 1.5, thickness = 0.5, roughness = 0.05,
+             attenuationColor = 0xffffff, attenuationDistance = Infinity } = {}) {
     const wasOn = this.material.transmission > 0;
     const willBeOn = transmission > 0;
+    const next = { transmission, ior, thickness, roughness, attenuationColor, attenuationDistance };
     if (wasOn !== willBeOn && this._matCtx) {
       const keep = { color: this.material.color.clone(), metalness: this.material.metalness,
                      map: this.material.map, normalMap: this.material.normalMap,
@@ -403,11 +405,12 @@ class VAT {
                      alphaMap: this.material.alphaMap, opacity: this.material.opacity,
                      transparent: this.material.transparent };
       const old = this.material;
-      this.material = makeMaterial(this._U, this._matCtx, { ...keep, transmission, ior, thickness, roughness });
+      this.material = makeMaterial(this._U, this._matCtx, { ...keep, ...next });
       this.mesh.material = this.material;
       old.dispose();
     } else {
-      Object.assign(this.material, { transmission, ior, thickness, roughness });
+      Object.assign(this.material, next);
+      this.material.attenuationColor = new THREE.Color(attenuationColor);
       this.material.needsUpdate = true;
     }
   }
