@@ -52,6 +52,11 @@
 <div id="ui" style="display:none">
   <div id="info">—</div>
 
+  <h4>Entorno (HDRI)</h4>
+  <label>Iluminación <select id="hdriSel"><option value="">Genérico (por defecto)</option></select></label>
+  <label><span><input id="hdriBg" type="checkbox"> Usar también como fondo</span></label>
+  <div id="hdriNote" style="font-size:11px;color:#9ab"></div>
+
   <h4>Modelo</h4>
   <label>Elegir <select id="modelSel"></select></label>
 
@@ -102,6 +107,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
 import { loadVAT, checkVATSupport } from './vat.js';
 
 // ====== CONFIG ======
@@ -133,7 +139,89 @@ if (support.reason) console.warn('vat.js:', support.reason);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1c22);
 const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+const defaultEnvTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environment = defaultEnvTex;
+let currentHDRITex = null;   // textura PMREM del HDRI cargado, para poder liberarla al cambiar
+const exrLoader = new EXRLoader();
+
+// --- Carpeta HDRI/: no hay forma de "listar" una carpeta en una web estática
+// (GitHub Pages incluido), así que se detecta probando 01.exr, 02.exr, 03.exr...
+// hasta donde existan archivos. Basta con subir 10.exr, 11.exr, etc. a la carpeta
+// para que aparezcan solos la próxima vez que se abra la página.
+const HDRI_DIR = './HDRI/';
+const HDRI_MAX_PROBE = 99;
+
+async function findHDRIs() {
+  // Secuencial y se detiene en el primer número que falte: para la convención
+  // 01.exr, 02.exr... esto basta, es rápido y no llena la consola de 404 de
+  // sondeos que ya sabemos que no van a existir.
+  const found = [];
+  for (let i = 1; i <= HDRI_MAX_PROBE; i++) {
+    const name = String(i).padStart(2, '0') + '.exr';
+    let ok = false;
+    try {
+      // GET + Range (no HEAD: en algunos navegadores/entornos HEAD se comporta mal).
+      // Range pide solo el primer byte; un servidor que lo respeta (como GitHub
+      // Pages/CDN) manda casi nada. Si el servidor ignora Range y manda el archivo
+      // completo igual sirve para detectarlo, solo que sin el ahorro de tráfico.
+      const res = await fetch(HDRI_DIR + name, { headers: { Range: 'bytes=0-0' } });
+      ok = res.ok || res.status === 206;
+    } catch { /* carpeta no existe o sin servidor: se corta igual */ }
+    if (!ok) break;
+    found.push(name);
+  }
+  return found;
+}
+
+async function populateHDRISelect() {
+  $('hdriNote').textContent = 'Buscando HDRIs en ' + HDRI_DIR + '…';
+  try {
+    const files = await findHDRIs();
+    $('hdriNote').textContent = '';
+    for (const name of files) {
+      const o = document.createElement('option');
+      o.value = HDRI_DIR + name;
+      o.textContent = 'HDRI ' + name.replace('.exr', '');
+      $('hdriSel').appendChild(o);
+    }
+    if (files.length === 0) {
+      $('hdriNote').textContent = `Sin HDRIs en ${HDRI_DIR} (se esperan 01.exr, 02.exr...).`;
+    }
+  } catch (e) {
+    $('hdriNote').textContent = 'No se pudo revisar la carpeta HDRI/.';
+  }
+}
+
+async function applyHDRI(url) {
+  if (!url) {
+    scene.environment = defaultEnvTex;
+    scene.background = new THREE.Color(0x1a1c22);
+    currentHDRITex?.dispose();
+    currentHDRITex = null;
+    return;
+  }
+  $('hdriNote').textContent = 'Cargando HDRI…';
+  try {
+    const tex = await new Promise((res, rej) => exrLoader.load(url, res, undefined, rej));
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    const pmremTex = pmrem.fromEquirectangular(tex).texture;
+    tex.dispose();
+    currentHDRITex?.dispose();
+    currentHDRITex = pmremTex;
+    scene.environment = pmremTex;
+    scene.background = $('hdriBg').checked ? pmremTex : new THREE.Color(0x1a1c22);
+    $('hdriNote').textContent = '';
+  } catch (e) {
+    console.error(e);
+    $('hdriNote').textContent = 'No se pudo cargar ese HDRI (¿es un .exr equirectangular válido?).';
+  }
+}
+
+$('hdriSel').onchange = (e) => applyHDRI(e.target.value);
+$('hdriBg').onchange = () => {
+  scene.background = ($('hdriBg').checked && currentHDRITex) ? currentHDRITex : new THREE.Color(0x1a1c22);
+};
+populateHDRISelect();
 const sun = new THREE.DirectionalLight(0xffffff, 1.2);
 sun.position.set(3, 6, 4);
 scene.add(sun);
