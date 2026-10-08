@@ -30,6 +30,12 @@ import os
 import json
 import struct
 import math
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import webbrowser
 
 import numpy as np
 
@@ -545,6 +551,68 @@ def axis_test(out="C:/MayaExports/VertexData", base="axis_test", target="Unity")
     cmds.select(obj, r=True)
     print("Test de ejes listo en %s: %s_vat.fbx (malla VAT) y %s_ref.fbx (referencia frame 15)." % (out, base, base))
 
+
+# ----------------------------------------------------------------------------
+# Abrir directo en el visor web (sin copiar archivos a mano)
+# ----------------------------------------------------------------------------
+_SERVERS = {}   # carpeta -> (proceso, puerto), para no abrir un servidor por cada export
+
+
+def _free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _ensure_server(web_dir):
+    """Levanta (o reutiliza) un servidor HTTP simple sobre web_dir, en segundo plano."""
+    web_dir = os.path.abspath(web_dir)
+    proc_port = _SERVERS.get(web_dir)
+    if proc_port and proc_port[0].poll() is None:
+        return proc_port[1]
+    port = _free_port()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "http.server", str(port)],
+        cwd=web_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    _SERVERS[web_dir] = (proc, port)
+    time.sleep(0.6)  # darle un instante a arrancar antes de abrir el navegador
+    return port
+
+
+def export_and_open_web(web_dir, base="my_mesh", open_browser=True, **export_kwargs):
+    """
+    Exporta con destino Web directo a web_dir (donde ya deben estar index.html y
+    vat.js del paquete) y, si open_browser=True, levanta un servidor local y abre
+    el navegador apuntando al resultado — sin copiar archivos a mano.
+
+    web_dir: carpeta del visor (la que tiene index.html / vat.js).
+    Resto de kwargs se pasan tal cual a export_vat() (mode, space, frames, etc.).
+    """
+    if not os.path.isfile(os.path.join(web_dir, "index.html")):
+        cmds.warning(
+            "No encuentro index.html en %s. Elige la carpeta donde están index.html y vat.js "
+            "del paquete web (no una carpeta vacía)." % web_dir
+        )
+    export_kwargs.pop("target", None)
+    export_kwargs.setdefault("bin", True)
+    export_kwargs.setdefault("exr", False)
+    export_kwargs.setdefault("fbx", False)
+    export_vat(out=web_dir, base=base, target="Web (Three.js)", **export_kwargs)
+
+    if open_browser:
+        try:
+            port = _ensure_server(web_dir)
+            url = "http://localhost:%d/index.html?base=./%s&v=%d" % (port, base, int(time.time()))
+            webbrowser.open(url)
+            print("Visor abierto en: %s" % url)
+        except Exception as e:
+            cmds.warning(
+                "No se pudo abrir el navegador automáticamente (%s). "
+                "Sirve la carpeta manualmente (python -m http.server) y abre index.html." % e
+            )
+
+
 # ----------------------------------------------------------------------------
 # Interfaz
 # ----------------------------------------------------------------------------
@@ -567,10 +635,8 @@ def _ui_export(*_):
     space = {"Mundo": "world", "Objeto": "object", "Offset (mundo - frame inicial)": "offset"}[
         cmds.optionMenuGrp("vatSpace", q=True, value=True)]
     mode = "rigid" if cmds.optionMenuGrp("vatMode", q=True, value=True).startswith("Rigid") else "soft"
-    export_vat(
-        out=cmds.textFieldButtonGrp("vatOut", q=True, text=True),
-        base=cmds.textFieldGrp("vatBase", q=True, text=True),
-        target=cmds.optionMenuGrp("vatTarget", q=True, value=True),
+    base = cmds.textFieldGrp("vatBase", q=True, text=True)
+    common = dict(
         mode=mode, space=space,
         half=cmds.optionMenuGrp("vatPrec", q=True, value=True).startswith("Float16"),
         bin=cmds.checkBox("vatBin", q=True, value=True),
@@ -586,69 +652,234 @@ def _ui_export(*_):
         max_tex=cmds.intFieldGrp("vatMaxTex", q=True, value1=True),
         scale=cmds.floatFieldGrp("vatScale", q=True, value1=True),
     )
+    export_vat(
+        out=cmds.textFieldButtonGrp("vatOut", q=True, text=True),
+        base=base, target=cmds.optionMenuGrp("vatTarget", q=True, value=True),
+        **common
+    )
+    if cmds.checkBox("vatOpenWeb", q=True, value=True):
+        web_dir = cmds.textFieldButtonGrp("vatWebDir", q=True, text=True)
+        if not web_dir:
+            cmds.warning("Elige la carpeta del visor web (donde está index.html) para poder abrirlo.")
+        else:
+            export_and_open_web(web_dir, base=base, open_browser=True, **common)
+
+
+# ----------------------------------------------------------------------------
+# Ayudas (botones "?")
+# ----------------------------------------------------------------------------
+HELP = {
+    "target": ("Destino",
+        "¿A dónde vas a llevar la animación?\n\n"
+        "Imagina que la animación es una canasta de manzanas y este es el lugar donde la vas a servir:\n"
+        "  - Web (Three.js): una página web.\n"
+        "  - Unity / Unreal: un videojuego.\n"
+        "  - Genérico: te da de todo, por si aún no decides.\n\n"
+        "Al cambiarlo, los pasos siguientes se rellenan solos."),
+    "mode": ("Tipo de animación",
+        "¿Cómo se comporta lo que animas?\n\n"
+        "  - Soft body: UNA manzana que se aplasta, se estira o se dobla. Cada punto de su piel se mueve distinto.\n"
+        "  - Rigid body: VARIAS manzanas (piezas) que ruedan y giran, pero ninguna se deforma. "
+        "Selecciona todas las piezas antes de exportar."),
+    "space": ("Espacio",
+        "¿Qué quieres guardar del movimiento?\n\n"
+        "Imagina una manzana que rueda por una mesa mientras se aplasta:\n"
+        "  - Mundo: guardas DÓNDE está en la mesa en cada momento (rodar + aplastarse). "
+        "Ideal para un objeto único.\n"
+        "  - Objeto: guardas SOLO cómo se aplasta, sin importar dónde está. "
+        "Ideal para copiar la manzana muchas veces en sitios distintos.\n"
+        "  - Offset: guardas CUÁNTO se movió cada punto respecto a donde empezó. "
+        "Ideal para motores y para poder usar Float16."),
+    "prec": ("Precisión",
+        "¿Qué tan fino medimos cada punto?\n\n"
+        "Imagina que mides una manzana:\n"
+        "  - Float32: con regla al milímetro. Exacto, pero pesa el doble.\n"
+        "  - Float16: con regla en centímetros. Pesa la mitad, pero puede 'temblar' si la manzana "
+        "está lejos del centro. Úsalo solo con Offset."),
+    "bin": (".bin crudo",
+        "Archivo para la WEB.\n\n"
+        "Es la 'foto' de la animación en formato crudo, lista para Three.js. "
+        "Si vas a una página web, déjalo marcado. Los motores de videojuegos no lo leen."),
+    "exr": (".exr",
+        "Archivo para UNITY y UNREAL.\n\n"
+        "Es lo mismo que el .bin, pero como imagen que los motores sí entienden. "
+        "Si vas a un videojuego, márcalo."),
+    "fbx": ("FBX con UV2",
+        "La malla para el videojuego.\n\n"
+        "Imagina que a cada manzana le pegas una etiqueta con su número de fila: 'tú eres la manzana 37'. "
+        "El motor lee esa etiqueta (el UV2) para saber qué parte de la animación te toca.\n\n"
+        "Necesario para Unity y Unreal."),
+    "jsonmesh": ("Malla dentro del JSON",
+        "El JSON trae además el 'molde' de la manzana (sus triángulos y UVs), "
+        "para que la web pueda dibujarla sin otro archivo.\n\n"
+        "Déjalo marcado para web. En motores la malla ya viene en el FBX."),
+    "hard": ("Bordes duros",
+        "Una manzana es redonda y suave. Un cubo de queso tiene esquinas filosas.\n\n"
+        "Si tu modelo tiene esquinas filosas (cajas, piezas mecánicas), márcalo para que la luz las muestre nítidas. "
+        "Con modelos redondos déjalo apagado: solo agregaría peso."),
+    "tan": ("Tangentes",
+        "Si vas a 'pintar' detalles finos sobre la manzana (arruguitas, poros) con un normal map, "
+        "la luz necesita saber hacia dónde 'peinar' esos detalles. Eso son las tangentes.\n\n"
+        "Sin normal map, déjalo apagado."),
+    "col": ("Color / alpha de vértice",
+        "Imagina una manzana que pasa de verde a roja mientras la miras, o que se vuelve transparente.\n\n"
+        "Esto guarda ese color en cada momento. Útil para fuego, humo o líquidos. "
+        "Si tu modelo no cambia de color, déjalo apagado."),
+    "range": ("Frames (inicio / fin)",
+        "Son las 'fotos' de la animación que se guardan.\n\n"
+        "Por defecto usa el rango de tu línea de tiempo. Menos fotos = archivos más livianos."),
+    "step": ("Paso",
+        "1 = guarda todas las fotos. 2 = una sí, una no. 3 = una de cada tres.\n\n"
+        "Sube el paso si los archivos pesan mucho: la animación sigue viéndose fluida "
+        "porque el visor mezcla las fotos entre sí."),
+    "maxtex": ("Tamaño máximo de textura",
+        "La animación se guarda en una bandeja de manzanas. Si hay demasiadas manzanas para una bandeja, "
+        "se reparten en varias bandejas (tiles).\n\n"
+        "4096 sirve en casi todos los teléfonos y PCs. No lo cambies si no sabes."),
+    "scale": ("Escala de unidades",
+        "Maya mide en centímetros; Unity, en metros. Es como pasar manzanas de una báscula a otra.\n\n"
+        "Web: 1  |  Unity: 0.01  |  Unreal: 1.\n"
+        "Se pone solo al elegir el destino."),
+    "out": ("Carpeta y nombre",
+        "Aquí caen los archivos exportados. El nombre base es el prefijo de todos ellos.\n\n"
+        "Ejemplo: 'mi_manzana' genera mi_manzana_pos.bin, mi_manzana_nrm.bin, mi_manzana_vat.json..."),
+    "axis": ("Test de ejes",
+        "Crea una pieza asimétrica (como una manzana con una hoja torcida a un lado) que se mueve y gira, "
+        "para comprobar en Unity o Unreal que NO aparece espejada ni volteada.\n\n"
+        "Úsalo una vez por motor. Detalles en el README."),
+    "webdir": ("Abrir en visor web",
+        "Es un atajo para no copiar archivos a mano.\n\n"
+        "Señala la carpeta donde ya están index.html y vat.js (la carpeta 'web' del paquete, "
+        "o la tuya si la integraste a tu proyecto). Al exportar, además de generar los archivos "
+        "ahí mismo, se abre tu navegador ya apuntando a la animación recién exportada.\n\n"
+        "Si la carpeta no tiene index.html, se avisa y no hace nada raro."),
+}
+
+
+def _help(key):
+    title, text = HELP[key]
+    cmds.button(label="?", width=22, height=22, backgroundColor=(0.30, 0.42, 0.60),
+                annotation=title,
+                command=lambda *_: cmds.confirmDialog(title=title, message=text,
+                                                      button=["Entendido"], defaultButton="Entendido"))
+
+
+def _row():
+    cmds.rowLayout(numberOfColumns=2, adjustableColumn=1, columnAttach=[(2, "left", 4)])
+
+
+def _row_end(key):
+    _help(key)
+    cmds.setParent("..")
+
+
+def _step(n, title, subtitle):
+    cmds.separator(height=12, style="in")
+    cmds.text(label="  PASO %d   |   %s" % (n, title), align="left", font="boldLabelFont",
+              height=24, enableBackground=True, backgroundColor=(0.20, 0.28, 0.38))
+    cmds.text(label="  " + subtitle, align="left", font="smallObliqueLabelFont", height=18)
 
 
 def show_ui():
     if cmds.window(WIN, exists=True):
         cmds.deleteUI(WIN)
-    cmds.window(WIN, title="VAT Exporter", widthHeight=(440, 640))
+    cmds.window(WIN, title="VAT Exporter", widthHeight=(480, 860))
     cmds.scrollLayout(childResizable=True)
-    cmds.columnLayout(adjustableColumn=True, rowSpacing=4, columnOffset=("both", 8))
+    cmds.columnLayout(adjustableColumn=True, rowSpacing=3, columnOffset=("both", 8))
 
-    cmds.frameLayout(label="Salida", collapsable=False, marginWidth=6, marginHeight=4)
-    cmds.columnLayout(adjustableColumn=True)
-    cmds.textFieldButtonGrp("vatOut", label="Carpeta", text="C:/MayaExports/VertexData",
-                            buttonLabel="...", buttonCommand=_ui_browse, adjustableColumn=2)
-    cmds.textFieldGrp("vatBase", label="Nombre base", text="my_mesh", adjustableColumn=2)
-    cmds.optionMenuGrp("vatTarget", label="Destino", changeCommand=_ui_apply_preset)
+    cmds.text(label="Selecciona tu malla en Maya, sigue los pasos 1 a 7 y pulsa EXPORTAR.\n"
+                    "Pulsa [?] en cualquier opción para ver qué hace (con manzanas).",
+              align="left", height=40)
+
+    # ---------------- PASO 1 ----------------
+    _step(1, "¿A dónde va?", "Elige el destino; los pasos siguientes se ajustan solos.")
+    _row()
+    cmds.optionMenuGrp("vatTarget", label="Destino", changeCommand=_ui_apply_preset, adjustableColumn=2)
     for t in TARGETS:
         cmds.menuItem(label=t)
-    cmds.optionMenuGrp("vatMode", label="Tipo")
+    _row_end("target")
+
+    # ---------------- PASO 2 ----------------
+    _step(2, "¿Qué se mueve?", "Una malla que se deforma, o varias piezas rígidas.")
+    _row()
+    cmds.optionMenuGrp("vatMode", label="Tipo", adjustableColumn=2)
     cmds.menuItem(label="Soft body (una malla deformable)")
     cmds.menuItem(label="Rigid body (varias piezas seleccionadas)")
-    cmds.optionMenuGrp("vatSpace", label="Espacio")
+    _row_end("mode")
+
+    # ---------------- PASO 3 ----------------
+    _step(3, "¿Cómo se guarda el movimiento?", "Espacio y precisión de los números.")
+    _row()
+    cmds.optionMenuGrp("vatSpace", label="Espacio", adjustableColumn=2)
     cmds.menuItem(label="Mundo")
     cmds.menuItem(label="Objeto")
     cmds.menuItem(label="Offset (mundo - frame inicial)")
-    cmds.optionMenuGrp("vatPrec", label="Precisión")
+    _row_end("space")
+    _row()
+    cmds.optionMenuGrp("vatPrec", label="Precisión", adjustableColumn=2)
     cmds.menuItem(label="Float32 (recomendado)")
     cmds.menuItem(label="Float16 (solo con Offset)")
-    cmds.setParent("..")
-    cmds.setParent("..")
+    _row_end("prec")
 
-    cmds.frameLayout(label="Archivos", collapsable=False, marginWidth=6, marginHeight=4)
-    cmds.columnLayout(adjustableColumn=True)
-    cmds.checkBox("vatBin", label=".bin crudo (Three.js)", value=True)
-    cmds.checkBox("vatExr", label=".exr (Unity / Unreal)", value=False)
-    cmds.checkBox("vatFbx", label="FBX de la malla con UV2 de lookup", value=False)
-    cmds.checkBox("vatJsonMesh", label="Incluir malla en el JSON", value=True)
-    cmds.setParent("..")
-    cmds.setParent("..")
+    # ---------------- PASO 4 ----------------
+    _step(4, "¿Qué archivos necesitas?", "Web usa .bin. Unity y Unreal usan .exr y FBX.")
+    _row(); cmds.checkBox("vatBin", label=".bin crudo (Web / Three.js)", value=True); _row_end("bin")
+    _row(); cmds.checkBox("vatExr", label=".exr (Unity / Unreal)", value=False); _row_end("exr")
+    _row(); cmds.checkBox("vatFbx", label="FBX de la malla con UV2 de lookup", value=False); _row_end("fbx")
+    _row(); cmds.checkBox("vatJsonMesh", label="Incluir malla en el JSON", value=True); _row_end("jsonmesh")
 
-    cmds.frameLayout(label="Datos extra", collapsable=False, marginWidth=6, marginHeight=4)
-    cmds.columnLayout(adjustableColumn=True)
-    cmds.checkBox("vatHard", label="Respetar bordes duros (normales por cara)", value=False)
-    cmds.checkBox("vatTan", label="Exportar tangentes (para normal maps)", value=False)
-    cmds.checkBox("vatCol", label="Exportar color / alpha de vértice", value=False)
-    cmds.setParent("..")
-    cmds.setParent("..")
+    # ---------------- PASO 5 ----------------
+    _step(5, "Extras (opcional)", "Solo si tu modelo los necesita.")
+    _row(); cmds.checkBox("vatHard", label="Respetar bordes duros (normales por cara)", value=False); _row_end("hard")
+    _row(); cmds.checkBox("vatTan", label="Exportar tangentes (para normal maps)", value=False); _row_end("tan")
+    _row(); cmds.checkBox("vatCol", label="Exportar color / alpha de vértice", value=False); _row_end("col")
 
-    cmds.frameLayout(label="Rango y límites", collapsable=False, marginWidth=6, marginHeight=4)
-    cmds.columnLayout(adjustableColumn=True)
+    # ---------------- PASO 6 ----------------
+    _step(6, "¿Cuánta animación?", "Rango de frames y límites de tamaño.")
+    _row()
     cmds.intFieldGrp("vatRange", label="Frames (ini / fin)", numberOfFields=2,
                      value1=int(cmds.playbackOptions(q=True, min=True)),
                      value2=int(cmds.playbackOptions(q=True, max=True)))
-    cmds.intFieldGrp("vatStep", label="Paso (1 = todos)", numberOfFields=1, value1=1)
-    cmds.intFieldGrp("vatMaxTex", label="Tamaño máx textura", numberOfFields=1, value1=4096)
-    cmds.floatFieldGrp("vatScale", label="Escala unidades", numberOfFields=1, value1=1.0)
-    cmds.setParent("..")
-    cmds.setParent("..")
+    _row_end("range")
+    _row(); cmds.intFieldGrp("vatStep", label="Paso (1 = todos)", numberOfFields=1, value1=1); _row_end("step")
+    _row(); cmds.intFieldGrp("vatMaxTex", label="Tamaño máx textura", numberOfFields=1, value1=4096); _row_end("maxtex")
+    _row(); cmds.floatFieldGrp("vatScale", label="Escala unidades", numberOfFields=1, value1=1.0); _row_end("scale")
 
-    cmds.button(label="EXPORTAR VAT", height=40, backgroundColor=(0.25, 0.5, 0.3), command=_ui_export)
-    cmds.button(label="Crear test de ejes (Unity/Unreal)", height=26,
+    # ---------------- PASO 7 ----------------
+    _step(7, "¿Dónde se guarda?", "Carpeta de salida y nombre de los archivos.")
+    _row()
+    cmds.textFieldButtonGrp("vatOut", label="Carpeta", text="C:/MayaExports/VertexData",
+                            buttonLabel="...", buttonCommand=_ui_browse, adjustableColumn=2)
+    _row_end("out")
+    cmds.textFieldGrp("vatBase", label="Nombre base", text="my_mesh", adjustableColumn=2)
+    cmds.separator(height=6, style="none")
+    _row()
+    cmds.checkBox("vatOpenWeb", label="Abrir en visor web tras exportar", value=False,
+                  changeCommand=lambda v: cmds.textFieldButtonGrp("vatWebDir", e=True, enable=v))
+    _row_end("webdir")
+    cmds.textFieldButtonGrp("vatWebDir", label="Carpeta del visor (index.html)", text="",
+                            buttonLabel="...", enable=False, adjustableColumn=2,
+                            buttonCommand=lambda *_: cmds.textFieldButtonGrp(
+                                "vatWebDir", e=True,
+                                text=(cmds.fileDialog2(dialogStyle=2, fileMode=3,
+                                      caption="Carpeta del visor web") or [""])[0]))
+
+    # ---------------- EXPORTAR ----------------
+    cmds.separator(height=14, style="in")
+    cmds.button(label="EXPORTAR VAT", height=44, backgroundColor=(0.25, 0.5, 0.3), command=_ui_export)
+
+    # ---------------- HERRAMIENTAS ----------------
+    cmds.separator(height=14, style="in")
+    cmds.text(label="  HERRAMIENTAS", align="left", font="boldLabelFont", height=22,
+              enableBackground=True, backgroundColor=(0.20, 0.28, 0.38))
+    _row()
+    cmds.button(label="Crear test de ejes (Unity/Unreal)", height=28,
                 command=lambda *_: axis_test(
                     out=cmds.textFieldButtonGrp("vatOut", q=True, text=True),
                     target=cmds.optionMenuGrp("vatTarget", q=True, value=True)))
+    _row_end("axis")
+    cmds.separator(height=10, style="none")
+
     cmds.showWindow(WIN)
 
 
